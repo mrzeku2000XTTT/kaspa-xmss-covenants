@@ -1,0 +1,10 @@
+{
+  "a": {
+    "label": "playerA",
+    "addr": "kaspa:qq04xl0msrh4klgarn7adchypqlnw8xsch6wpf2hnr9lf5f0258dcpzvpnvtd"
+  },
+  "b": {
+    "label": "playerB",
+    "addr": "kaspa:qpzynwqrfx2765mxffhd07mgagenh55ljxvzyp6duq0gm77kd40d5drk2avgs"
+  }
+}
