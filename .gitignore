@@ -1,0 +1,8 @@
+node_modules/
+__pycache__/
+*.pyc
+*.private.json
+.env
+.deploy.lock/
+*.log
+/tmp/
