@@ -10,6 +10,8 @@ Everything in this repo has been **deployed and spent on Kaspa mainnet with
 real KAS** — not testnet, not simulated. Transaction IDs for every claim
 below are in [`docs/MAINNET_PROOFS.md`](docs/MAINNET_PROOFS.md).
 
+**Full running log of every mainnet-proven milestone (with tx ids) lives in [`PROVEN_MILESTONES.md`](PROVEN_MILESTONES.md) — check it before re-proving something that's already done.**
+
 ## Why this matters
 
 Kaspa's Toccata upgrade added the opcodes needed (`OpSHA256`, `OpXor`,
@@ -31,6 +33,11 @@ script construction.
 | `covenants/hypertree_2layer/` | The core 2-layer XMSS^MT hypertree at 3 scales (2^8 → 2^20 → 2^32 addressable signatures), with genuine on-chain linkage (layer0's root is computed live in-script and fed directly into layer1) |
 | `cold-wallet/` | Air-gapped signing workflow + verification test + QR-transfer design spec |
 | `docs/` | Architecture deep-dive and the full list of mainnet transaction proofs |
+| `covenants/sentinel/` | Quantum-safe dead-man's-switch: XMSS check-ins + resettable CLTV timeout, fully generalized customer-key pipeline |
+| `covenants/zkgate_groth16/` | ZK covenant secured by a Groth16 proof (`OpZkPrecompile` tag `0x20`) — circuit, verification key, generic deploy/unlock scripts |
+| `covenants/zkgate_risc0/` | ZK covenant secured by a RISC Zero succinct STARK proof (`OpZkPrecompile` tag `0x21`) — post-quantum, no trusted setup |
+| `x402-kaspa/` | x402 payment scheme adapted to Kaspa: one-shot `exact` scheme + Sentinel-based recurring/subscription billing |
+| `research/` | Privacy roadmap + "beyond Zcash" research backing the RISC0/STARK shielded-pool plan |
 
 ## Quickstart
 
