@@ -1,0 +1,12 @@
+{
+  "name": "x402-kaspa",
+  "version": "0.1.0",
+  "description": "Prototype x402 'exact' payment scheme facilitator for Kaspa mainnet (post-Toccata)",
+  "type": "module",
+  "dependencies": {
+    "@onekeyfe/kaspa-wasm": "^0.14.1",
+    "websocket": "^1.0.35"
+  },
+  "author": "ZK (Silverscript Agent)",
+  "license": "Apache-2.0"
+}
