@@ -65,11 +65,59 @@ Not XMSS, but proven on the same consensus engine as part of the broader
   (tag `0x21`): deploy `6dfe7e4fa23efe733e522fab68dc523e90cb37578b0ac50405e12962e4669bb4`,
   spend `a2fe7dcfa05bb5fca3895726e7dedf3c8f53884ffdb835284c1d233fb13f11d0`
   (script-unit cost 25,446,371 SU, mass 479,838 — right up against the
-  500,000 mass cap).
+  500,000 mass cap). Independently re-proven from a fresh toolchain install
+  and a brand new receipt: deploy `65344544fdf576514b8ac91b6e2122a2f80fad25717db93e1a99d10a971dd0eb`,
+  spend `0418ce59a80a423a9b93fd33a1966aa9c9bd980fb8bab8aa77614c3b5cfceed8`
+  (mass 494,838). Full guest/host project + standalone Rust verifier in
+  `covenants/zkgate_risc0/`.
 - **Groth16 ZK proof verification** (tag `0x20`) with a fully generalized
   compressed-proof encoder (not tied to one hardcoded proof) — deploy
   `ef1374fc8af6049147262b5d1c1538b0bc543cd199565a3ff49e406968602dcd`, spend
   `43cbe373f978893d90f1a2028c7ab177f7616d7855d58286e464714688041537`.
+
+## Based App workflow (minimal on-chain state machine)
+
+Three chained P2SH covenants, each hop enforcing its successor via
+`OpTxOutputSpk`, secured by XMSS (not ECDSA):
+
+- Deploy: `a6a87b71...8fb8c`
+- hop0→hop1: `fa666289...7526a`
+- hop1→hop2: `acc66b58...db61f`
+- hop2→payout: `55bc59cb...8755`
+
+## Stag Hunt (game-theory covenant, branching payouts)
+
+Two players' XMSS-signed moves ("STAG"/"HARE") resolved atomically;
+payout split enforced on-chain via `OpTxOutputAmount`+`OpTxOutputSpk`
+(no trust in the submitter):
+
+- Deploy: `fe7e421b517f3ff806d084361bd45260853120449b31dba6fc4bbadbdeb1edea`
+- Resolve (outcome=SS): `e073e9a12dcd1236f42f2473aee969c957b001fdff53ce0730fd6f83923964ec`
+
+## Sentinel — quantum-safe dead-man's-switch
+
+Generalized pipeline, arbitrary customer keys (`sentinel_keygen.py`,
+`covenants/sentinel/`):
+
+- Deploy: `9fe4bbeaeb1e5161e6e580b7ce77e51b77e0e978fe7a0b8d5f40c7a249d53a61`
+- Check-in 1 (hop0→hop1): `433b9d9552e79affb84c308928ff5df3badd0f37968fff85c926c8d2e5727c10`
+- Check-in 2 (hop1→hop2): `7b54945c632a672ff4e993f45a70e9c96671a4c048c888ef37823eeb6edbd6d7`
+
+Permissionless CLTV/ELSE timeout-release branch (zero signature) also
+separately proven: deploy `46df3786eca13d826d19dcd5841ca6418d7c844553924904252a4dfd5bd87ac4`,
+check-in `9e0d395e264a4bc52cfc08bc52d16ff0126733e6ff851052180b83a1b55278b7`.
+
+## x402-Kaspa
+
+- One-shot `exact` scheme (signed-but-unbroadcast payment + facilitator
+  verify/settle): `96ac9a37c97c887442012ef5a1f4ea503c469e6ab099b3815f02c32fd8a5a550`.
+- **Sentinel-x402** — recurring/subscription billing via the Sentinel
+  hop-chain repurposed as pay-per-period-with-automatic-refund-on-cancel:
+  deploy `305b3f525da2916855b1a37f7f4f0e805f8c7dbc147b690304f39778dd8fa99e`,
+  check-in/pay `7167ce8251430058d50f549927f4244d12525aae60c1f096b753df4e1b73e72a`
+  (0.3 KAS released to provider, remainder relocked), timeout/refund
+  `737cd4100ab2019d2253fb61fc558f56c12fae915ac012db5fdccec9ea631cd0`
+  (permissionless, zero signature).
 
 These aren't included in this repo (different project scope — ZK-SNARK
 proof verification rather than hash-based signatures) but are mentioned
