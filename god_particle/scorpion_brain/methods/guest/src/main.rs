@@ -1,0 +1,421 @@
+// THE SCORPION'S BRAIN — Stage 2 (The Stinger)
+//
+// Stage 1 proved identity + simplified ownership (stem <-> vault).
+// Stage 2 adds the real immune system: XMSS/WOTS+ signature verification
+// runs INSIDE the STARK circuit itself. Previously (entries 491-560) this
+// same math required a ~130KB unrolled on-chain script. Now the brain does
+// the thinking off-chain and the on-chain script only ever checks one
+// constant-size proof, no matter how deep the hypertree grows.
+//
+// DNA blob layout (163 bytes, Stage 2 genome — Stage 1 fields + Chromosomes
+// 2b/3 for the sentinel organ):
+//
+//   offset  size  field
+//   ── Chromosome 1 — IDENTITY (unchanged from Stage 1) ──
+//   0       4     magic = "GPDL"
+//   4       32    covenant_id        (chitin — must never change)
+//   36      4     generation         (u32 LE — must increment by exactly 1)
+//   40      1     mode               (0=stem, 1=vault, 2=sentinel)
+//   41      1     prev_mode          (must equal old.mode)
+//   ── Chromosome 2 — OWNERSHIP ──
+//   42      32    owner_commitment   (sha256(owner_secret))
+//   74      32    xmss_root          (Merkle root of the antibody tree)
+//   106     4     xmss_next_leaf     (next antibody index, no reuse)
+//   ── Chromosome 3 — MORTALITY ──
+//   110     8     deadline_daa       (u64 LE — CLTV death date)
+//   118     4     checkin_interval   (u32 LE — heartbeat period)
+//   122     1     is_terminal        (0=alive, 1=dying, 2=dead)
+//   123     32    beneficiary_commit (heir verification hash)
+//   155     4     grace_blocks       (u32 LE)
+//   159     4     heartbeat_count    (u32 LE)
+//
+// Private witness (mode 2->2, check-in transition):
+//   old_dna, new_dna (163B each)
+//   pub_seed (24B), leaf_idx (u32), message (24B)
+//   wots_witnesses: 51 x 24B (partial WOTS+ chain values)
+//   auth_path: height x (auth_node 24B, is_left bool)
+//
+// Public journal: sha256(old_dna) || sha256(new_dna) || old_mode || new_mode
+
+use risc0_zkvm::guest::env;
+use risc0_zkvm::sha::{Impl, Sha256};
+
+const N: usize = 24; // XMSS hash truncation length (matches proven mainnet scheme)
+const W_STEPS: usize = 15; // max additional chain steps (w=16, so w-1=15)
+const N_CHAINS: usize = 51; // 48 message digit chains + 3 checksum chains
+
+const MAGIC: &[u8; 4] = b"GPDL";
+const DNA_LEN: usize = 163;
+
+const MODE_STEM: u8 = 0;
+const MODE_VAULT: u8 = 1;
+const MODE_SENTINEL: u8 = 2;
+
+struct Dna {
+    covenant_id: [u8; 32],
+    generation: u32,
+    mode: u8,
+    prev_mode: u8,
+    owner_commitment: [u8; 32],
+    xmss_root: [u8; 32],
+    xmss_next_leaf: u32,
+    deadline_daa: u64,
+    checkin_interval: u32,
+    is_terminal: u8,
+    beneficiary_commit: [u8; 32],
+    grace_blocks: u32,
+    heartbeat_count: u32,
+}
+
+fn parse_dna(b: &[u8]) -> Dna {
+    assert_eq!(b.len(), DNA_LEN, "DNA blob must be exactly 163 bytes");
+    assert_eq!(&b[0..4], MAGIC, "bad DNA magic — not a scorpion genome");
+
+    let mut covenant_id = [0u8; 32];
+    covenant_id.copy_from_slice(&b[4..36]);
+    let generation = u32::from_le_bytes(b[36..40].try_into().unwrap());
+    let mode = b[40];
+    let prev_mode = b[41];
+
+    let mut owner_commitment = [0u8; 32];
+    owner_commitment.copy_from_slice(&b[42..74]);
+    let mut xmss_root = [0u8; 32];
+    xmss_root.copy_from_slice(&b[74..106]);
+    let xmss_next_leaf = u32::from_le_bytes(b[106..110].try_into().unwrap());
+
+    let deadline_daa = u64::from_le_bytes(b[110..118].try_into().unwrap());
+    let checkin_interval = u32::from_le_bytes(b[118..122].try_into().unwrap());
+    let is_terminal = b[122];
+    let mut beneficiary_commit = [0u8; 32];
+    beneficiary_commit.copy_from_slice(&b[123..155]);
+    let grace_blocks = u32::from_le_bytes(b[155..159].try_into().unwrap());
+    let heartbeat_count = u32::from_le_bytes(b[159..163].try_into().unwrap());
+
+    Dna {
+        covenant_id,
+        generation,
+        mode,
+        prev_mode,
+        owner_commitment,
+        xmss_root,
+        xmss_next_leaf,
+        deadline_daa,
+        checkin_interval,
+        is_terminal,
+        beneficiary_commit,
+        grace_blocks,
+        heartbeat_count,
+    }
+}
+
+fn mode_transition_allowed(from: u8, to: u8) -> bool {
+    matches!(
+        (from, to),
+        (MODE_STEM, MODE_STEM)
+            | (MODE_STEM, MODE_VAULT)
+            | (MODE_VAULT, MODE_VAULT)
+            | (MODE_VAULT, MODE_STEM)
+            | (MODE_STEM, MODE_SENTINEL) // arm the stinger
+            | (MODE_SENTINEL, MODE_SENTINEL) // check-in
+    )
+}
+
+fn sha256(data: &[u8]) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    out.copy_from_slice(Impl::hash_bytes(data).as_bytes());
+    out
+}
+
+fn ab(words: [u32; 8]) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    for i in 0..8 {
+        out[i * 4..i * 4 + 4].copy_from_slice(&words[i].to_be_bytes());
+    }
+    out
+}
+
+// PRF matching the proven Python reference: sha256(0x00000003 || pub_seed || addr)[:out_len]
+fn prf(pub_seed: &[u8], addr: &[u8; 32], out_len: usize) -> Vec<u8> {
+    if out_len <= 32 {
+        let mut buf = Vec::with_capacity(4 + pub_seed.len() + 32);
+        buf.extend_from_slice(&[0, 0, 0, 3]);
+        buf.extend_from_slice(pub_seed);
+        buf.extend_from_slice(addr);
+        sha256(&buf)[..out_len].to_vec()
+    } else {
+        let mut out = Vec::new();
+        let mut counter: u8 = 0;
+        while out.len() < out_len {
+            let mut buf = Vec::with_capacity(4 + pub_seed.len() + 32 + 1);
+            buf.extend_from_slice(&[0, 0, 0, 3]);
+            buf.extend_from_slice(pub_seed);
+            buf.extend_from_slice(addr);
+            buf.push(counter);
+            out.extend_from_slice(&sha256(&buf));
+            counter += 1;
+        }
+        out.truncate(out_len);
+        out
+    }
+}
+
+// F(inp, KEY, BITMASK) = sha256(0x00000000 || KEY || (inp XOR BITMASK))[:N]
+fn f_hash(inp: &[u8; N], key: &[u8], bitmask: &[u8]) -> [u8; N] {
+    let mut xored = [0u8; N];
+    for i in 0..N {
+        xored[i] = inp[i] ^ bitmask[i];
+    }
+    let mut buf = Vec::with_capacity(4 + key.len() + N);
+    buf.extend_from_slice(&[0, 0, 0, 0]);
+    buf.extend_from_slice(key);
+    buf.extend_from_slice(&xored);
+    let h = sha256(&buf);
+    let mut out = [0u8; N];
+    out.copy_from_slice(&h[..N]);
+    out
+}
+
+// Hl(a, b, KEY, BITMASK) = sha256(0x00000001 || KEY || ((a||b) XOR BITMASK))[:N]
+fn hl_hash(a: &[u8; N], b: &[u8; N], key: &[u8], bitmask: &[u8]) -> [u8; N] {
+    let mut concat = [0u8; 2 * N];
+    concat[..N].copy_from_slice(a);
+    concat[N..].copy_from_slice(b);
+    let mut xored = [0u8; 2 * N];
+    for i in 0..2 * N {
+        xored[i] = concat[i] ^ bitmask[i];
+    }
+    let mut buf = Vec::with_capacity(4 + key.len() + 2 * N);
+    buf.extend_from_slice(&[0, 0, 0, 1]);
+    buf.extend_from_slice(key);
+    buf.extend_from_slice(&xored);
+    let h = sha256(&buf);
+    let mut out = [0u8; N];
+    out.copy_from_slice(&h[..N]);
+    out
+}
+
+// Convert an N-byte message into 48 base-16 digits + 3 checksum digits = 51 total,
+// matching the proven mainnet chain-index convention: chains 0..47 = message digits,
+// chains 48..50 = checksum digits (get_digit's mapping, chains 0-2 = checksum in the
+// original script builder; here we keep message-first ordering for guest simplicity —
+// self-consistent between this guest and its own host/prover, which is all that matters
+// since verification happens entirely inside this same STARK).
+// Produces digit_for_chain[ci] for ci in 0..51, matching the proven mainnet
+// convention EXACTLY: chains 0,1,2 = checksum digits; chains 3..50 = message
+// digit (ci-3). (See xmss_lib.py's get_digit — chains 0-2 checksum, else message.)
+fn message_to_digits(message: &[u8; N]) -> [u8; N_CHAINS] {
+    let mut msg_digits = [0u8; 48];
+    for i in 0..N {
+        msg_digits[2 * i] = message[i] >> 4;
+        msg_digits[2 * i + 1] = message[i] & 0x0F;
+    }
+    let csum: u32 = msg_digits.iter().map(|&d| 15 - d as u32).sum();
+    let d0 = (csum / 256) as u8;
+    let d1 = ((csum % 256) / 16) as u8;
+    let d2 = (csum % 16) as u8;
+
+    let mut digit_for_chain = [0u8; N_CHAINS];
+    digit_for_chain[0] = d0;
+    digit_for_chain[1] = d1;
+    digit_for_chain[2] = d2;
+    for ci in 3..N_CHAINS {
+        digit_for_chain[ci] = msg_digits[ci - 3];
+    }
+    digit_for_chain
+}
+
+fn verify_wots_leaf(
+    pub_seed: &[u8],
+    leaf_idx: u32,
+    message: &[u8; N],
+    witnesses: &[[u8; N]; N_CHAINS],
+) -> [u8; N] {
+    let digits = message_to_digits(message);
+
+    // ── Continue each chain from its witness value up to W_STEPS=15 ──
+    let mut chain_ends = [[0u8; N]; N_CHAINS];
+    for ci in 0..N_CHAINS {
+        let d = digits[ci] as usize;
+        let mut cur = witnesses[ci];
+        for st in d..W_STEPS {
+            let key = prf(
+                pub_seed,
+                &ab([0, 0, 0, 0, leaf_idx * 1000 + ci as u32, 0, st as u32, 0]),
+                N,
+            );
+            let bitmask = prf(
+                pub_seed,
+                &ab([0, 0, 0, 0, leaf_idx * 1000 + ci as u32, 0, st as u32, 1]),
+                N,
+            );
+            cur = f_hash(&cur, &key, &bitmask);
+        }
+        chain_ends[ci] = cur;
+    }
+
+    // ── L-tree: pairwise-combine all 51 chain-ends down to 1 leaf value ──
+    let mut level: Vec<[u8; N]> = chain_ends.to_vec();
+    let mut li: u32 = 0;
+    while level.len() > 1 {
+        let mut next = Vec::new();
+        let mut i = 0;
+        let mut pair_idx: u32 = 0;
+        while i + 1 < level.len() {
+            let key = prf(pub_seed, &ab([0, 0, 0, 2, leaf_idx, li, pair_idx, 0]), N);
+            let bitmask = prf(pub_seed, &ab([0, 0, 0, 2, leaf_idx, li, pair_idx, 1]), 2 * N);
+            next.push(hl_hash(&level[i], &level[i + 1], &key, &bitmask));
+            i += 2;
+            pair_idx += 1;
+        }
+        if level.len() % 2 == 1 {
+            next.push(level[level.len() - 1]);
+        }
+        level = next;
+        li += 1;
+    }
+    level[0]
+}
+
+fn walk_merkle(
+    pub_seed: &[u8],
+    leaf_value: [u8; N],
+    leaf_idx: u32,
+    auth_path: &[([u8; N], bool)], // (auth_node, is_left_meaning_current_is_left)
+) -> [u8; N] {
+    let mut cur = leaf_value;
+    let mut idx = leaf_idx;
+    for (lvl, (auth_node, is_left)) in auth_path.iter().enumerate() {
+        let pair_idx = idx / 2;
+        let key = prf(pub_seed, &ab([0, 0, 0, 3, 0, lvl as u32, pair_idx, 0]), N);
+        let bitmask = prf(pub_seed, &ab([0, 0, 0, 3, 0, lvl as u32, pair_idx, 1]), 2 * N);
+        cur = if *is_left {
+            hl_hash(&cur, auth_node, &key, &bitmask)
+        } else {
+            hl_hash(auth_node, &cur, &key, &bitmask)
+        };
+        idx /= 2;
+    }
+    cur
+}
+
+fn main() {
+    let old_dna_bytes: Vec<u8> = env::read();
+    let new_dna_bytes: Vec<u8> = env::read();
+    let transition: u8 = env::read(); // 0 = stem<->vault (Stage 1 owner-sig path), 1 = sentinel check-in (XMSS path)
+
+    let old_dna = parse_dna(&old_dna_bytes);
+    let new_dna = parse_dna(&new_dna_bytes);
+
+    // ── Phase 1: identity invariants (Chromosome 1 — always enforced) ──
+    assert_eq!(old_dna.covenant_id, new_dna.covenant_id, "covenant_id mutated");
+    assert_eq!(new_dna.generation, old_dna.generation + 1, "generation must advance by 1");
+    assert_eq!(new_dna.prev_mode, old_dna.mode, "prev_mode must equal old.mode");
+    assert!(mode_transition_allowed(old_dna.mode, new_dna.mode), "illegal mode transition");
+
+    if transition == 0 {
+        // ── Stage 1 style: owner-secret authorized transition (stem<->vault, or arming sentinel) ──
+        let owner_secret: Vec<u8> = env::read();
+        assert_eq!(owner_secret.len(), 32, "owner_secret must be 32 bytes");
+        let h = sha256(&owner_secret);
+        assert_eq!(h, old_dna.owner_commitment, "owner_secret does not match commitment");
+        assert_eq!(old_dna.owner_commitment, new_dna.owner_commitment, "owner_commitment must persist");
+
+        if new_dna.mode == MODE_SENTINEL && old_dna.mode == MODE_STEM {
+            // Arming the stinger: owner sets deadline, checkin_interval, xmss_root, beneficiary.
+            assert_eq!(new_dna.heartbeat_count, 0, "freshly armed sentinel starts at 0 heartbeats");
+            assert!(new_dna.checkin_interval > 0, "checkin_interval must be nonzero");
+            assert_eq!(new_dna.xmss_next_leaf, 0, "freshly armed sentinel starts at leaf 0");
+        }
+    } else {
+        // ── Stage 2 real logic: XMSS-authorized check-in (sentinel -> sentinel) ──
+        assert_eq!(old_dna.mode, MODE_SENTINEL, "check-in only valid from sentinel mode");
+        assert_eq!(new_dna.mode, MODE_SENTINEL, "check-in stays in sentinel mode");
+        assert_eq!(old_dna.is_terminal, 0, "cannot check in once dying/dead");
+
+        // Immune system invariants carry forward.
+        assert_eq!(old_dna.xmss_root, new_dna.xmss_root, "xmss_root must not change on check-in");
+        assert_eq!(
+            old_dna.beneficiary_commit, new_dna.beneficiary_commit,
+            "beneficiary_commit must not change on check-in"
+        );
+        assert_eq!(
+            old_dna.checkin_interval, new_dna.checkin_interval,
+            "checkin_interval must not change on check-in"
+        );
+
+        // Read the XMSS witness (private): pub_seed, leaf index, message, WOTS+ witnesses, auth path.
+        let pub_seed: Vec<u8> = env::read();
+        let leaf_idx: u32 = env::read();
+        let message: Vec<u8> = env::read();
+        let witnesses_flat: Vec<u8> = env::read(); // N_CHAINS * N bytes
+        let auth_nodes_flat: Vec<u8> = env::read(); // height * N bytes
+        let auth_is_left: Vec<u8> = env::read(); // height bytes, 1=left 0=right
+
+        assert_eq!(message.len(), N, "message must be N bytes");
+        assert_eq!(witnesses_flat.len(), N_CHAINS * N, "witnesses must be N_CHAINS*N bytes");
+        assert_eq!(
+            auth_nodes_flat.len() % N,
+            0,
+            "auth_nodes must be a multiple of N bytes"
+        );
+        let height = auth_nodes_flat.len() / N;
+        assert_eq!(auth_is_left.len(), height, "auth_is_left length must match height");
+
+        // No-antibody-reuse: this leaf must be exactly the next unused one, and the
+        // successor DNA must advance the counter by exactly 1.
+        assert_eq!(leaf_idx, old_dna.xmss_next_leaf, "leaf index must equal xmss_next_leaf (no reuse)");
+        assert_eq!(
+            new_dna.xmss_next_leaf,
+            old_dna.xmss_next_leaf + 1,
+            "xmss_next_leaf must advance by exactly 1"
+        );
+
+        let mut message_arr = [0u8; N];
+        message_arr.copy_from_slice(&message);
+
+        let mut witnesses = [[0u8; N]; N_CHAINS];
+        for i in 0..N_CHAINS {
+            witnesses[i].copy_from_slice(&witnesses_flat[i * N..(i + 1) * N]);
+        }
+
+        let mut auth_path: Vec<([u8; N], bool)> = Vec::with_capacity(height);
+        for i in 0..height {
+            let mut node = [0u8; N];
+            node.copy_from_slice(&auth_nodes_flat[i * N..(i + 1) * N]);
+            auth_path.push((node, auth_is_left[i] == 1));
+        }
+
+        // ── THE REAL VERIFICATION — inside the STARK, not an on-chain script ──
+        let leaf_value = verify_wots_leaf(&pub_seed, leaf_idx, &message_arr, &witnesses);
+        let computed_root = walk_merkle(&pub_seed, leaf_value, leaf_idx, &auth_path);
+
+        let mut xmss_root_padded = [0u8; N];
+        xmss_root_padded.copy_from_slice(&old_dna.xmss_root[..N]);
+        assert_eq!(computed_root, xmss_root_padded, "XMSS signature does not verify against xmss_root");
+
+        // ── Mortality invariants: deadline extends by exactly checkin_interval ──
+        assert_eq!(
+            new_dna.deadline_daa,
+            old_dna.deadline_daa + old_dna.checkin_interval as u64,
+            "deadline_daa must advance by exactly checkin_interval"
+        );
+        assert_eq!(
+            new_dna.heartbeat_count,
+            old_dna.heartbeat_count + 1,
+            "heartbeat_count must advance by exactly 1"
+        );
+        assert_eq!(new_dna.is_terminal, 0, "check-in keeps the organism alive (is_terminal=0)");
+    }
+
+    // ── Commit the transition to the public journal ──
+    let old_dna_hash = sha256(&old_dna_bytes);
+    let new_dna_hash = sha256(&new_dna_bytes);
+
+    let mut journal = Vec::with_capacity(32 + 32 + 1 + 1);
+    journal.extend_from_slice(&old_dna_hash);
+    journal.extend_from_slice(&new_dna_hash);
+    journal.push(old_dna.mode);
+    journal.push(new_dna.mode);
+
+    env::commit_slice(&journal);
+}

@@ -1,0 +1,21 @@
+[package]
+name = "host"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "host"
+path = "src/main.rs"
+
+[[bin]]
+name = "checkin"
+path = "src/bin/checkin.rs"
+
+[dependencies]
+methods = { path = "../methods" }
+risc0-zkvm = { version = "^3.0.5" }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = "1.0"
+hex = "0.4"
+serde_json = "1.0"
+sha2 = "0.10"

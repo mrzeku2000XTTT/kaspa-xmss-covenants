@@ -111,3 +111,30 @@ Format: `TX <txid>` = mainnet transaction, confirmed `is_accepted:true` on api.k
 - Keep it factual and current — update in place if a "proof" later turns out flawed
   (see e.g. Sentinel's leaf-index-0 debugging saga, kept in per-conversation memory not here
   since it's implementation-detail-level, not milestone-level).
+
+## 7. God Particle — Scorpion Brain (RISC0/STARK unified covenant organism)
+- **Thesis:** move ALL covenant logic (identity, ownership, XMSS immune system, mortality,
+  privacy, game theory) off-chain into a single RISC0 guest program. The on-chain script
+  stays a constant size (~223KB, one STARK verify) no matter how complex the organism's
+  internal state machine gets. Full architecture documented in `god_particle/GOD_PARTICLE_COMPLETE.md`.
+- **Stage 1 (Hatching) — local proof:** guest enforces Chromosome 1 (identity/chitin) +
+  simplified Chromosome 2 (ownership) for stem(0)->vault(1) transitions: covenant_id
+  immutable, generation+1, prev_mode continuity, owner-secret hash commitment check.
+  DNA blob 163 bytes. **PROOF VERIFIED LOCALLY** — image_id `363bc3b0...`.
+- **Stage 2 (The Stinger) — local proof:** extended the SAME guest ELF with a second
+  transition path that runs the full proven XMSS/WOTS+ verification (PRF, F-chain,
+  Hl combine, L-tree reduction, Merkle authpath walk — previously a ~130KB unrolled
+  on-chain script, see Sentinel entries above) natively in Rust INSIDE the STARK circuit.
+  Verifies: WOTS+ signature validity, leaf-index-must-equal-next-leaf (no antibody reuse),
+  deadline_daa advances by exactly checkin_interval, heartbeat_count+1.
+  **PROOF VERIFIED LOCALLY** — image_id `ee147ac7...`, seal 222,668 bytes (real SHA256
+  work across 51 chains + Merkle walk actually executing in the zkVM, not just asserted).
+- **Bug found & fixed:** first Stage 2 attempt failed XMSS verification — root cause was
+  chain-index-to-digit mapping order (checksum digits go on chains 0-2, message digits on
+  chains 3-50, not message-first). Matched the proven Python signer's exact convention.
+- Code: `god_particle/scorpion_brain/` (guest = single ELF, `host/src/main.rs` = Stage 1
+  proof, `host/src/bin/checkin.rs` = Stage 2 proof), `god_particle/scorpion_brain_stage2_keygen/`
+  (witness generator, reuses proven `x402-kaspa`/`core` XMSS primitives).
+- **Not yet deployed to mainnet** — both proofs are local-only so far. Next: Stage 3
+  (privacy carapace — Merkle+nullifier+Groth16-or-STARK inside the same guest), then wrap
+  in a P2SH covenant and put a real heartbeat on mainnet.
