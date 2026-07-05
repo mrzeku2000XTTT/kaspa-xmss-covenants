@@ -1,3 +1,28 @@
+
+fn sha256_bytes(data: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(data);
+    let out = h.finalize();
+    let mut a = [0u8; 32];
+    a.copy_from_slice(&out);
+    a
+}
+
+const GENESIS_DAA: u64 = 477000000;
+fn genesis_txid() -> [u8; 32] { sha256_bytes(b"scorpion_genesis_placeholder_txid") }
+
+fn append_memory(mut d: Vec<u8>, prev_state_hash: &[u8], transition_count: u32, creation_daa: u64, creation_txid: &[u8]) -> Vec<u8> {
+    assert_eq!(prev_state_hash.len(), 32);
+    assert_eq!(creation_txid.len(), 32);
+    d.extend_from_slice(prev_state_hash);
+    d.extend_from_slice(&transition_count.to_le_bytes());
+    d.extend_from_slice(&creation_daa.to_le_bytes());
+    d.extend_from_slice(creation_txid);
+    assert_eq!(d.len(), 569, "DNA must be 569 bytes after Chromosome 7 (memory) is appended");
+    d
+}
+
 // Host program for the Scorpion's Brain — Stage 3 privacy carapace proof.
 // Proves a shielded withdrawal: knowledge of (secret, nonce) whose commitment
 // is a leaf in the pool's Merkle tree, revealing only a nullifier — all
@@ -140,7 +165,7 @@ fn main() {
     );
 
     // new_dna: first withdrawal proven, nullifier revealed
-    let new_dna = build_privacy_dna(
+    let new_dna_body = build_privacy_dna(
         &covenant_id,
         2,
         3,
@@ -151,6 +176,11 @@ fn main() {
         1,
         tree_depth,
     );
+
+    let genesis_txid_v = genesis_txid();
+    let old_dna = append_memory(old_dna, &[0u8; 32], 0, GENESIS_DAA, &genesis_txid_v);
+    let old_hash = sha256_bytes(&old_dna);
+    let new_dna = append_memory(new_dna_body, &old_hash, 1, GENESIS_DAA, &genesis_txid_v);
 
     eprintln!("old_dna (hex) = {}", hex::encode(&old_dna));
     eprintln!("new_dna (hex) = {}", hex::encode(&new_dna));

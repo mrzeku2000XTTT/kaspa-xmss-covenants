@@ -14,6 +14,21 @@ use std::fs;
 const MAGIC: &[u8; 4] = b"GPDL";
 const MODE_STEM: u8 = 0;
 
+const GENESIS_DAA: u64 = 477000000;
+fn genesis_txid() -> [u8; 32] { sha256(b"scorpion_genesis_placeholder_txid") }
+
+fn append_memory(mut d: Vec<u8>, prev_state_hash: &[u8], transition_count: u32, creation_daa: u64, creation_txid: &[u8]) -> Vec<u8> {
+    assert_eq!(prev_state_hash.len(), 32);
+    assert_eq!(creation_txid.len(), 32);
+    d.extend_from_slice(prev_state_hash);
+    d.extend_from_slice(&transition_count.to_le_bytes());
+    d.extend_from_slice(&creation_daa.to_le_bytes());
+    d.extend_from_slice(creation_txid);
+    assert_eq!(d.len(), 569, "DNA must be 569 bytes after Chromosome 7 (memory) is appended");
+    d
+}
+
+
 #[allow(clippy::too_many_arguments)]
 fn build_dna(
     covenant_id: &[u8],
@@ -109,7 +124,10 @@ fn main() {
     let child_template = sha256(b"scorpion_brain_v1_template"); // stand-in "same script family" hash
 
     // Parent: generation 5, STEM mode, fertile (max_generations=3), litter cap 2, 0 children so far.
-    let old_dna = build_dna(
+    // Parent's own memory chain: transition_count=4 (its 5th generation, arbitrary nonzero
+    // baseline for this standalone test), a fixed genesis birth certificate.
+    let genesis_txid_v = genesis_txid();
+    let old_dna_body = build_dna(
         &covenant_id,
         5,
         MODE_STEM,
@@ -120,8 +138,12 @@ fn main() {
         3,                // max_generations
         0,                // children_born
     );
+    let old_dna = append_memory(old_dna_body, &[0u8; 32], 4, GENESIS_DAA, &genesis_txid_v);
+    let old_hash = sha256(&old_dna); // this exact hash becomes each child's first memory
+
     // Parent after spawning 2 children: generation advances, children_born -> 2.
-    let new_dna = build_dna(
+    // The PARENT continues its OWN memory chain normally -- it didn't die, it spawned.
+    let new_dna_body = build_dna(
         &covenant_id,
         6,
         MODE_STEM,
@@ -132,6 +154,7 @@ fn main() {
         3,
         2,
     );
+    let new_dna = append_memory(new_dna_body, &old_hash, 5, GENESIS_DAA, &genesis_txid_v);
 
     // Two children, deterministically derived covenant_id = sha256(parent_covenant_id || index).
     let mut child_ids = vec![];
@@ -142,10 +165,13 @@ fn main() {
         child_ids.push(sha256(&buf));
     }
 
+    // Each child: a genuinely new person (own birth certificate, own history starting at 0)
+    // whose one unerasable inherited memory is the parent's exact state at the moment of
+    // spawning (old_hash). Fully new, fully distinct -- and provably descended.
     let children_dna: Vec<Vec<u8>> = child_ids
         .iter()
         .map(|cid| {
-            build_dna(
+            let body = build_dna(
                 cid,
                 0,          // generation 0 -- newborn
                 MODE_STEM,  // born resting
@@ -155,7 +181,12 @@ fn main() {
                 &child_template,
                 2,          // max_generations - 1 (parent had 3)
                 0,          // children_born
-            )
+            );
+            let mut child_txid_buf = Vec::with_capacity(36);
+            child_txid_buf.extend_from_slice(cid);
+            child_txid_buf.extend_from_slice(b"birth");
+            let child_txid = sha256(&child_txid_buf); // the child's own, distinct birth certificate
+            append_memory(body, &old_hash, 0, GENESIS_DAA + 1, &child_txid)
         })
         .collect();
 

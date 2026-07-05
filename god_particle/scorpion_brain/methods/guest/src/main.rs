@@ -50,7 +50,7 @@ const W_STEPS: usize = 15; // max additional chain steps (w=16, so w-1=15)
 const N_CHAINS: usize = 51; // 48 message digit chains + 3 checksum chains
 
 const MAGIC: &[u8; 4] = b"GPDL";
-const DNA_LEN: usize = 493;
+const DNA_LEN: usize = 569;
 
 const MODE_STEM: u8 = 0;
 const MODE_VAULT: u8 = 1;
@@ -92,6 +92,10 @@ struct Dna {
     child_template: [u8; 32],
     max_generations: u8,
     children_born: u8,
+    prev_state_hash: [u8; 32],
+    transition_count: u32,
+    creation_daa: u64,
+    creation_txid: [u8; 32],
 }
 
 fn parse_dna(b: &[u8]) -> Dna {
@@ -151,6 +155,13 @@ fn parse_dna(b: &[u8]) -> Dna {
     let max_generations = b[491];
     let children_born = b[492];
 
+    let mut prev_state_hash = [0u8; 32];
+    prev_state_hash.copy_from_slice(&b[493..525]);
+    let transition_count = u32::from_le_bytes([b[525], b[526], b[527], b[528]]);
+    let creation_daa = u64::from_le_bytes([b[529], b[530], b[531], b[532], b[533], b[534], b[535], b[536]]);
+    let mut creation_txid = [0u8; 32];
+    creation_txid.copy_from_slice(&b[537..569]);
+
     Dna {
         covenant_id,
         generation,
@@ -185,6 +196,10 @@ fn parse_dna(b: &[u8]) -> Dna {
         child_template,
         max_generations,
         children_born,
+        prev_state_hash,
+        transition_count,
+        creation_daa,
+        creation_txid,
     }
 }
 
@@ -401,6 +416,35 @@ fn main() {
     // goes through the hardcoded allow-list below.
     if transition != 4 {
         assert!(mode_transition_allowed(old_dna.mode, new_dna.mode), "illegal mode transition");
+    }
+
+    // ── Phase 1b: memory invariants (Chromosome 7 — the ventral ganglia, "what do I remember?") ──
+    // This is the organism's OWN continuing memory chain: every single transition, of every
+    // kind, must link backward to the exact state it came from. There is no way to forge a
+    // history -- an observer can walk prev_state_hash all the way back to creation_txid and
+    // verify every link against this same brain's rules. creation_daa/creation_txid are set
+    // once, at birth, and can never be altered by the organism itself.
+    //
+    // Transition 5 (reproduction) is the one deliberate exception, and it is the theological
+    // core of Stage 7: a freshly spawned CHILD does not continue the parent's memory chain --
+    // it starts a wholly new one (transition_count=0, its own creation_daa/creation_txid,
+    // fully its own person). But the child's *very first* memory, its Genesis verse, is
+    // permanently sha256(parent_dna_at_the_moment_of_spawning) -- an unforgeable, unbreakable
+    // proof that this new, distinct, mortal being came from that exact divine state. Fully new
+    // personhood, grafted onto an eternally provable origin. "The Word became flesh" as a
+    // hash-chain link instead of a doctrine.
+    let old_dna_hash = sha256(&old_dna_bytes);
+    if transition != 5 {
+        assert_eq!(new_dna.prev_state_hash, old_dna_hash, "memory chain broken -- new state must hash-link to old state");
+        assert_eq!(new_dna.transition_count, old_dna.transition_count + 1, "transition_count must advance by exactly 1");
+        assert_eq!(new_dna.creation_daa, old_dna.creation_daa, "creation_daa is immutable -- set once, at birth");
+        assert_eq!(new_dna.creation_txid, old_dna.creation_txid, "creation_txid is immutable -- the birth certificate never changes");
+    } else {
+        // The PARENT still continues its own memory chain normally (it didn't die, it spawned).
+        assert_eq!(new_dna.prev_state_hash, old_dna_hash, "parent's memory chain broken -- new state must hash-link to old state");
+        assert_eq!(new_dna.transition_count, old_dna.transition_count + 1, "parent's transition_count must advance by exactly 1");
+        assert_eq!(new_dna.creation_daa, old_dna.creation_daa, "parent's creation_daa is immutable");
+        assert_eq!(new_dna.creation_txid, old_dna.creation_txid, "parent's creation_txid is immutable");
     }
 
     if transition == 0 {
@@ -722,6 +766,19 @@ fn main() {
             );
             assert_eq!(child.owner_commitment, old_dna.owner_commitment, "child inherits the same owner (asexual/parthenogenesis)");
             assert_eq!(child.children_born, 0, "a newborn child has not yet reproduced");
+
+            // ── Chromosome 7 for the CHILD — the incarnation clause ──
+            // The child is a genuinely new person: its own history starts at 0, and it gets
+            // its own birth certificate (creation_daa/creation_txid), which must be its OWN
+            // and not a copy of the parent's (no impersonating the original; must be born
+            // at or after the parent's own birth -- causality). But its first memory, the
+            // one link it can never erase or choose, is the hash of the parent's exact state
+            // at the moment of spawning. Distinct and mortal, yet provably, permanently
+            // descended from that one origin.
+            assert_eq!(child.transition_count, 0, "a newborn child's own history begins at 0");
+            assert_eq!(child.prev_state_hash, old_dna_hash, "child's first memory must be the parent's exact state at the moment of spawning");
+            assert_ne!(child.creation_txid, old_dna.creation_txid, "child must have its own birth certificate, not the parent's");
+            assert!(child.creation_daa >= old_dna.creation_daa, "child cannot be born before its own parent existed");
         }
     } else {
         panic!("unknown transition kind");

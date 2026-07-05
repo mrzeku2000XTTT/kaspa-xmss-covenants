@@ -1,3 +1,28 @@
+
+fn sha256_bytes(data: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(data);
+    let out = h.finalize();
+    let mut a = [0u8; 32];
+    a.copy_from_slice(&out);
+    a
+}
+
+const GENESIS_DAA: u64 = 477000000;
+fn genesis_txid() -> [u8; 32] { sha256_bytes(b"scorpion_genesis_placeholder_txid") }
+
+fn append_memory(mut d: Vec<u8>, prev_state_hash: &[u8], transition_count: u32, creation_daa: u64, creation_txid: &[u8]) -> Vec<u8> {
+    assert_eq!(prev_state_hash.len(), 32);
+    assert_eq!(creation_txid.len(), 32);
+    d.extend_from_slice(prev_state_hash);
+    d.extend_from_slice(&transition_count.to_le_bytes());
+    d.extend_from_slice(&creation_daa.to_le_bytes());
+    d.extend_from_slice(creation_txid);
+    assert_eq!(d.len(), 569, "DNA must be 569 bytes after Chromosome 7 (memory) is appended");
+    d
+}
+
 // Host program for the Scorpion's Brain — Stage 5 nervous-system proof.
 // Proves a mode transition is authorized not by a hardcoded match arm, but by
 // Merkle-inclusion in route_root — the owner-configurable "wiring diagram" of
@@ -131,9 +156,13 @@ fn main() {
         .collect();
 
     // old_dna: generation 1, mode = from_mode (stem), route_root wired in already.
-    let old_dna = build_dna(&covenant_id, 1, from_mode, 0, &owner_commitment, &route_root);
+    let old_dna_body = build_dna(&covenant_id, 1, from_mode, 0, &owner_commitment, &route_root);
     // new_dna: generation 2, mode = to_mode (vault), reached via the nervous system, not a hardcoded arm.
-    let new_dna = build_dna(&covenant_id, 2, to_mode, from_mode, &owner_commitment, &route_root);
+    let new_dna_body = build_dna(&covenant_id, 2, to_mode, from_mode, &owner_commitment, &route_root);
+    let genesis_txid_v = genesis_txid();
+    let old_dna = append_memory(old_dna_body, &[0u8; 32], 0, GENESIS_DAA, &genesis_txid_v);
+    let old_hash = sha256_bytes(&old_dna);
+    let new_dna = append_memory(new_dna_body, &old_hash, 1, GENESIS_DAA, &genesis_txid_v);
 
     eprintln!("route_root (hex) = {}", hex::encode(&route_root));
     eprintln!("proving route: mode {from_mode} -> mode {to_mode} (leaf {leaf_index})");
