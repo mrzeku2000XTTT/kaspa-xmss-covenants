@@ -61,12 +61,39 @@ Format: `TX <txid>` = mainnet transaction, confirmed `is_accepted:true` on api.k
   current Zcash tech per `research/PRIVACY_ADVANCED_RESEARCH.md`.
 - Code: `covenants/zkgate_risc0/` (guest/host RISC0 project + standalone verifier crate).
 
-## 5. Privacy Roadmap (research, not yet built)
+## 5. Privacy Roadmap
 - Full phased plan for a Tornado/Zcash-style shielded pool adapted to Kaspa's per-UTXO
   P2SH state-covenant model, built on the now-proven RISC0/STARK precompile.
 - See `research/PRIVACY_ROADMAP.md` and `research/PRIVACY_ADVANCED_RESEARCH.md`.
-- **Next actual milestone to build:** Phase 1 shielded pool proof-of-mechanism (small tree,
-  1 fixed denomination, manual nullifier tracking) — not yet started as of 2026-07-04.
+
+## 6. Shielded Privacy Pool — FIRST mainnet-proven Groth16 withdrawal (2026-07-04)
+- **What:** Tornado Cash/Zcash-style shielded pool on Kaspa. 4-leaf Poseidon Merkle tree;
+  deposit = commitment in tree; withdrawal = Groth16 ZK proof of membership + revealed
+  nullifier hash (prevents double-spend without revealing which deposit). Observer sees
+  "someone proved membership and revealed nullifier X" — NOT which of the 4 deposits was
+  spent. Withdrawal goes to a fresh, unlinkable address.
+- **Circuit:** circom `withdraw.circom` — Merkle membership (4-leaf Poseidon tree) +
+  nullifier hash. 2 public inputs: [root, nullifierHash]. Trusted setup via snarkjs
+  (Groth16). Proof verified locally with snarkjs before on-chain attempt.
+- **Key breakthrough — public input push order:** rusty-kaspa's OpZkPrecompile (0xa6, tag
+  0x20) pops public inputs from the TOP of the stack (LIFO). So `inputs[0]` (root) must be
+  pushed LAST (on top), `inputs[1]` (nullifier) pushed FIRST (deeper). Correct push order:
+  `pd(NULLIFIER), pd(ROOT), pi(2), pd(PROOF), pd(VK), pd(0x20), OP_ZK`. Getting this wrong
+  produces "Groth16 verification failed" — confirmed by reading the precompile source at
+  `crypto/txscript/src/zk_precompiles/groth16/mod.rs`.
+- **Mainnet TXs:**
+  - Deploy (0.5 KAS locked): `da609f48fcdb22e50747ce120281959356cb454019810228914c184604c1e3a8`
+  - **Withdrawal (ZK proof verified on-chain, 0.28 KAS to fresh address):** `c6d3606659485f16f5b5560cce172e587f24832b62e8ea00949466b2e41a7f9c` — `is_accepted: true`
+- **Fee economics:** Groth16 verification with 2 public inputs needs ~20.1M sompi
+  (compute mass 201,132) in required fees. Covenant must be funded with enough to cover
+  fee + leave output above KIP-9 storage-mass floor (~0.2 KAS). 0.5 KAS deposit worked
+  cleanly (0.28 KAS output after 0.22 KAS fee).
+- **Known loss:** 0.35 KAS permanently stuck in an earlier wrong-pubkey + wrong-order
+  deploy (TX `fa7d1032...`) — both branches unspendable. 0.2 KAS in another attempt (TX
+  `9195b7a1...`) reclaimable via ELSE/owner-sig but pending sighash format debugging.
+- Code: `covenants/privacy_pool/` (circuit, keys, deploy/spend scripts, encoding).
+- **Next:** Phase 2 — on-chain nullifier-registry covenant (currently manual tracking),
+  deeper tree (O(height) scaling confirmed from XMSS work), dynamic denominations.
 
 ## 6. x402-Kaspa
 - One-shot `exact` scheme (signed-but-unbroadcast payment + facilitator verify/settle):
