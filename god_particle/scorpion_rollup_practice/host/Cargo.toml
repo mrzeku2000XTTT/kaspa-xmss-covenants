@@ -7,18 +7,6 @@ edition = "2021"
 name = "host"
 path = "src/main.rs"
 
-[[bin]]
-name = "checkin"
-path = "src/bin/checkin.rs"
-
-[[bin]]
-name = "withdraw"
-path = "src/bin/withdraw.rs"
-
-[[bin]]
-name = "resolve_game"
-path = "src/bin/resolve_game.rs"
-
 [dependencies]
 methods = { path = "../methods" }
 risc0-zkvm = { version = "^3.0.5" }

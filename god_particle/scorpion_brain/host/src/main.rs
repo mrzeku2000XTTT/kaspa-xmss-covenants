@@ -49,7 +49,15 @@ fn build_dna(
     d.extend_from_slice(&[0u8; 32]); // nullifier_hash
     d.extend_from_slice(&0u32.to_le_bytes()); // nullifier_count
     d.push(0); // tree_depth
-    assert_eq!(d.len(), 232);
+    // Chromosome 9 (game theory) — zeroed, unused outside game mode.
+    d.extend_from_slice(&[0u8; 32]); // player_a_commit
+    d.extend_from_slice(&[0u8; 32]); // player_b_commit
+    d.extend_from_slice(&0u64.to_le_bytes()); // pot_amount
+    d.push(0); // game_state
+    d.extend_from_slice(&0u64.to_le_bytes()); // payout_a
+    d.extend_from_slice(&0u64.to_le_bytes()); // payout_b
+    d.extend_from_slice(&0u64.to_le_bytes()); // payout_house
+    assert_eq!(d.len(), 329);
     d
 }
 

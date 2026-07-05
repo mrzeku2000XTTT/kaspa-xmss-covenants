@@ -50,12 +50,13 @@ const W_STEPS: usize = 15; // max additional chain steps (w=16, so w-1=15)
 const N_CHAINS: usize = 51; // 48 message digit chains + 3 checksum chains
 
 const MAGIC: &[u8; 4] = b"GPDL";
-const DNA_LEN: usize = 232;
+const DNA_LEN: usize = 329;
 
 const MODE_STEM: u8 = 0;
 const MODE_VAULT: u8 = 1;
 const MODE_SENTINEL: u8 = 2;
 const MODE_PRIVACY: u8 = 3;
+const MODE_GAME: u8 = 4;
 
 struct Dna {
     covenant_id: [u8; 32],
@@ -75,6 +76,13 @@ struct Dna {
     nullifier_hash: [u8; 32],
     nullifier_count: u32,
     tree_depth: u8,
+    player_a_commit: [u8; 32],
+    player_b_commit: [u8; 32],
+    pot_amount: u64,
+    game_state: u8,
+    payout_a: u64,
+    payout_b: u64,
+    payout_house: u64,
 }
 
 fn parse_dna(b: &[u8]) -> Dna {
@@ -108,6 +116,16 @@ fn parse_dna(b: &[u8]) -> Dna {
     let nullifier_count = u32::from_le_bytes(b[227..231].try_into().unwrap());
     let tree_depth = b[231];
 
+    let mut player_a_commit = [0u8; 32];
+    player_a_commit.copy_from_slice(&b[232..264]);
+    let mut player_b_commit = [0u8; 32];
+    player_b_commit.copy_from_slice(&b[264..296]);
+    let pot_amount = u64::from_le_bytes(b[296..304].try_into().unwrap());
+    let game_state = b[304];
+    let payout_a = u64::from_le_bytes(b[305..313].try_into().unwrap());
+    let payout_b = u64::from_le_bytes(b[313..321].try_into().unwrap());
+    let payout_house = u64::from_le_bytes(b[321..329].try_into().unwrap());
+
     Dna {
         covenant_id,
         generation,
@@ -126,6 +144,13 @@ fn parse_dna(b: &[u8]) -> Dna {
         nullifier_hash,
         nullifier_count,
         tree_depth,
+        player_a_commit,
+        player_b_commit,
+        pot_amount,
+        game_state,
+        payout_a,
+        payout_b,
+        payout_house,
     }
 }
 
@@ -140,6 +165,8 @@ fn mode_transition_allowed(from: u8, to: u8) -> bool {
             | (MODE_SENTINEL, MODE_SENTINEL) // check-in
             | (MODE_STEM, MODE_PRIVACY) // open the pool
             | (MODE_PRIVACY, MODE_PRIVACY) // shielded withdrawal
+            | (MODE_STEM, MODE_GAME) // open the courtship dance
+            | (MODE_GAME, MODE_GAME) // resolve the dance
     )
 }
 
@@ -324,7 +351,7 @@ fn walk_merkle(
 fn main() {
     let old_dna_bytes: Vec<u8> = env::read();
     let new_dna_bytes: Vec<u8> = env::read();
-    let transition: u8 = env::read(); // 0 = stem<->vault (Stage 1 owner-sig path), 1 = sentinel check-in (XMSS path)
+    let transition: u8 = env::read(); // 0=owner-sig (vault/pool-open/game-open), 1=XMSS check-in, 2=privacy withdrawal, 3=game resolve
 
     let old_dna = parse_dna(&old_dna_bytes);
     let new_dna = parse_dna(&new_dna_bytes);
@@ -355,6 +382,16 @@ fn main() {
             // tree root (built and audited off-chain, same trust model as arming Sentinel).
             assert_eq!(new_dna.nullifier_count, 0, "freshly opened pool starts with 0 withdrawals");
             assert!(new_dna.tree_depth > 0, "tree_depth must be nonzero");
+        }
+
+        if new_dna.mode == MODE_GAME && old_dna.mode == MODE_STEM {
+            // Opening the courtship dance: owner/house sets both players' sealed move
+            // commitments and the pot, unresolved (game_state=0), zero payouts.
+            assert_eq!(new_dna.game_state, 0, "freshly opened game starts unresolved");
+            assert_eq!(new_dna.payout_a, 0, "freshly opened game has no payouts yet");
+            assert_eq!(new_dna.payout_b, 0, "freshly opened game has no payouts yet");
+            assert_eq!(new_dna.payout_house, 0, "freshly opened game has no payouts yet");
+            assert!(new_dna.pot_amount > 0, "pot_amount must be nonzero");
         }
     } else if transition == 1 {
         // ── Stage 2 real logic: XMSS-authorized check-in (sentinel -> sentinel) ──
@@ -499,6 +536,62 @@ fn main() {
         nul_input.extend_from_slice(&secret);
         let nullifier = sha256(&nul_input);
         assert_eq!(nullifier, new_dna.nullifier_hash, "revealed nullifier does not match new DNA");
+    } else if transition == 3 {
+        // ── Stage 4 real logic: courtship dance resolution (game -> game) ──
+        // Stag Hunt: both players commit sealed moves off-chain; this transition proves
+        // both reveals match their commitments and computes the payout split from a
+        // hardcoded choreography table — entirely inside the STARK, no on-chain branching
+        // script needed (unlike the original Stag Hunt covenant, entry from earlier work,
+        // which needed OpTxOutputAmount/OpTxOutputSpk branches directly in the redeem script).
+        assert_eq!(old_dna.mode, MODE_GAME, "resolve only valid from game mode");
+        assert_eq!(new_dna.mode, MODE_GAME, "resolve stays in game mode");
+        assert_eq!(old_dna.game_state, 0, "game must be unresolved to resolve");
+        assert_eq!(new_dna.game_state, 1, "resolve must set game_state=1");
+        assert_eq!(old_dna.player_a_commit, new_dna.player_a_commit, "player_a_commit immutable");
+        assert_eq!(old_dna.player_b_commit, new_dna.player_b_commit, "player_b_commit immutable");
+        assert_eq!(old_dna.pot_amount, new_dna.pot_amount, "pot_amount immutable during resolve");
+
+        let move_a: u8 = env::read();
+        let nonce_a: Vec<u8> = env::read();
+        let move_b: u8 = env::read();
+        let nonce_b: Vec<u8> = env::read();
+
+        assert!(move_a == 1 || move_a == 2, "move_a must be 1=STAG or 2=HARE");
+        assert!(move_b == 1 || move_b == 2, "move_b must be 1=STAG or 2=HARE");
+        assert_eq!(nonce_a.len(), 32, "nonce_a must be 32 bytes");
+        assert_eq!(nonce_b.len(), 32, "nonce_b must be 32 bytes");
+
+        let mut buf_a = Vec::with_capacity(33);
+        buf_a.push(move_a);
+        buf_a.extend_from_slice(&nonce_a);
+        assert_eq!(sha256(&buf_a), old_dna.player_a_commit, "move_a does not match player_a_commit");
+
+        let mut buf_b = Vec::with_capacity(33);
+        buf_b.push(move_b);
+        buf_b.extend_from_slice(&nonce_b);
+        assert_eq!(sha256(&buf_b), old_dna.player_b_commit, "move_b does not match player_b_commit");
+
+        // Choreography (payout table), immutable, in basis points of pot_amount:
+        //   SS (both Stag):  A=4500 B=4500 house=1000
+        //   SH (A Stag/B Hare): A=1000 B=8000 house=1000
+        //   HS (A Hare/B Stag): A=8000 B=1000 house=1000
+        //   HH (both Hare):  A=4000 B=4000 house=2000
+        let (bps_a, bps_b, bps_house): (u64, u64, u64) = match (move_a, move_b) {
+            (1, 1) => (4500, 4500, 1000),
+            (1, 2) => (1000, 8000, 1000),
+            (2, 1) => (8000, 1000, 1000),
+            (2, 2) => (4000, 4000, 2000),
+            _ => unreachable!(),
+        };
+
+        let pot = old_dna.pot_amount;
+        let payout_a = pot * bps_a / 10000;
+        let payout_b = pot * bps_b / 10000;
+        let payout_house = pot * bps_house / 10000;
+
+        assert_eq!(new_dna.payout_a, payout_a, "payout_a mismatch vs choreography");
+        assert_eq!(new_dna.payout_b, payout_b, "payout_b mismatch vs choreography");
+        assert_eq!(new_dna.payout_house, payout_house, "payout_house mismatch vs choreography");
     } else {
         panic!("unknown transition kind");
     }

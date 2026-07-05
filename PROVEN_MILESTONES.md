@@ -158,3 +158,40 @@ Format: `TX <txid>` = mainnet transaction, confirmed `is_accepted:true` on api.k
   withdrawal) now live as one organism, selected by a transition byte. Next: Stage 4
   (claws — escrow/game theory) per the build order, or move to wrapping the whole thing
   in a real P2SH covenant and putting a heartbeat on mainnet.
+
+## 7c. God Particle — Stage 4 "The Claws" (game theory, natively inside the STARK)
+- Extended the SAME guest ELF a fourth time (transition=3): courtship dance resolution
+  (Stag Hunt) — both players' sealed moves (sha256(move||nonce) commitments) verified
+  against revealed moves, payout split computed from a hardcoded choreography table
+  (basis points of pot: SS=4500/4500/1000, SH=1000/8000/1000, HS=8000/1000/1000,
+  HH=4000/4000/2000, A/B/house), all natively in Rust — no on-chain OpTxOutputAmount/
+  OpTxOutputSpk branching script needed (unlike the original Stag Hunt covenant).
+  DNA grew to 329 bytes (Chromosome 9: player commits, pot_amount, game_state, 3 payouts).
+- **PROOF VERIFIED LOCALLY on the FIRST attempt** — image_id changes again (new
+  combined-guest id, now 4 transition kinds: 0=owner-secret, 1=XMSS check-in,
+  2=privacy withdrawal, 3=game resolve). Test: both players played STAG (SS outcome),
+  pot 1.5 KAS equivalent, payouts A=0.675/B=0.675/house=0.15 computed and verified inside
+  the STARK.
+- Code: `god_particle/scorpion_brain/host/src/bin/resolve_game.rs`, witness gen
+  `god_particle/scorpion_brain_stage2_keygen/gen_stage4_witness.py`.
+- **Four brains, one organism**, all local-proof-only so far: stem<->vault, sentinel
+  check-in, privacy withdrawal, game resolve — selected by a transition byte in one
+  evolving RISC0 guest ELF. Not yet deployed to mainnet.
+
+## 8. Rollup practice — batching N chained state transitions into ONE STARK proof
+- Separate small project (`god_particle/scorpion_rollup_practice/`), not part of the
+  scorpion brain. Practices the core rollup/Based-App pattern (KIP-21 lanes, Igra-style
+  L2 settlement): instead of one proof per state transition, a SINGLE guest execution
+  loops through N chained transitions (here: N=4 stem<->vault moults using the same
+  owner-secret-authorized logic as Stage 1), enforcing that each link's old_dna equals
+  the previous link's new_dna byte-for-byte, and only commits the BATCH's start hash,
+  end hash, and length to the journal — no intermediate state ever needs verifying
+  on L1. This is the same principle a real rollup uses to settle thousands of L2 txs
+  with one L1-verified proof.
+- **PROOF VERIFIED LOCALLY on the FIRST attempt.** Chain: generation 100->104,
+  stem->vault->stem->vault->stem. journal = batch_start_hash(32) + batch_end_hash(32)
+  + batch_size(4, u32 LE).
+- Motivation: with Igra Labs building a full ZK-verified EVM L2 on Kaspa and KIP-21
+  lanes designed for exactly this batching pattern, this was a deliberate practice
+  exercise before attempting anything at that scale — confirms the "N transitions,
+  1 proof" mental model works end-to-end with our own tooling.
