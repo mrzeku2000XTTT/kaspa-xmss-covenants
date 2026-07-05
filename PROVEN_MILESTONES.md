@@ -195,3 +195,22 @@ Format: `TX <txid>` = mainnet transaction, confirmed `is_accepted:true` on api.k
   lanes designed for exactly this batching pattern, this was a deliberate practice
   exercise before attempting anything at that scale — confirms the "N transitions,
   1 proof" mental model works end-to-end with our own tooling.
+
+## 7d. God Particle — Stage 5 "The Nervous System" (data-driven route table, natively inside the STARK)
+- Extended the SAME guest ELF a fifth time (transition=4): mode transitions are now
+  ALSO authorizable via Merkle-inclusion in `route_root` (Chromosome 10), not just the
+  hardcoded `mode_transition_allowed()` match table. The owner can wire in new legal
+  moults just by publishing a new `route_root` — no guest redeploy needed. DNA grew to
+  458 bytes (route_root, self_template, peer_count, 2 peer_ids).
+- **Deliberately proved a route NOT in the hardcoded allow-list**: (mode 4 GAME -> mode 0
+  STEM) is illegal under the old hardcoded table, but legal here purely because it's
+  leaf 3 of a 4-leaf test route tree. **PROOF VERIFIED LOCALLY, first attempt.**
+- **Negative test:** corrupted the Merkle auth-path direction bits and reran — guest
+  correctly panicked ("route not found in route_root"), confirming the check isn't
+  vacuous.
+- Code: `god_particle/scorpion_brain/host/src/bin/route_moult.rs`, witness gen
+  `god_particle/scorpion_brain_stage2_keygen/gen_stage5_witness.py`.
+- **Five brains, one organism**, all local-proof-only so far: stem<->vault/owner-secret,
+  XMSS check-in, privacy withdrawal, game resolve, and now route-validated moult —
+  selected by a transition byte in one evolving RISC0 guest ELF. Not yet deployed to
+  mainnet.

@@ -19,6 +19,10 @@ path = "src/bin/withdraw.rs"
 name = "resolve_game"
 path = "src/bin/resolve_game.rs"
 
+[[bin]]
+name = "route_moult"
+path = "src/bin/route_moult.rs"
+
 [dependencies]
 methods = { path = "../methods" }
 risc0-zkvm = { version = "^3.0.5" }

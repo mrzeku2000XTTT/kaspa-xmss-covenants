@@ -63,7 +63,14 @@ fn build_privacy_dna(
     d.extend_from_slice(&0u64.to_le_bytes()); // payout_a
     d.extend_from_slice(&0u64.to_le_bytes()); // payout_b
     d.extend_from_slice(&0u64.to_le_bytes()); // payout_house
-    assert_eq!(d.len(), 329);
+    
+    // Chromosome 10 (nervous system) — zeroed, unused outside route-validated moults.
+    d.extend_from_slice(&[0u8; 32]); // route_root
+    d.extend_from_slice(&[0u8; 32]); // self_template
+    d.push(0); // peer_count
+    d.extend_from_slice(&[0u8; 32]); // peer_id_0
+    d.extend_from_slice(&[0u8; 32]); // peer_id_1
+    assert_eq!(d.len(), 458);
     d
 }
 

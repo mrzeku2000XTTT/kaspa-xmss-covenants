@@ -50,7 +50,7 @@ const W_STEPS: usize = 15; // max additional chain steps (w=16, so w-1=15)
 const N_CHAINS: usize = 51; // 48 message digit chains + 3 checksum chains
 
 const MAGIC: &[u8; 4] = b"GPDL";
-const DNA_LEN: usize = 329;
+const DNA_LEN: usize = 458;
 
 const MODE_STEM: u8 = 0;
 const MODE_VAULT: u8 = 1;
@@ -83,6 +83,11 @@ struct Dna {
     payout_a: u64,
     payout_b: u64,
     payout_house: u64,
+    route_root: [u8; 32],
+    self_template: [u8; 32],
+    peer_count: u8,
+    peer_id_0: [u8; 32],
+    peer_id_1: [u8; 32],
 }
 
 fn parse_dna(b: &[u8]) -> Dna {
@@ -126,6 +131,16 @@ fn parse_dna(b: &[u8]) -> Dna {
     let payout_b = u64::from_le_bytes(b[313..321].try_into().unwrap());
     let payout_house = u64::from_le_bytes(b[321..329].try_into().unwrap());
 
+    let mut route_root = [0u8; 32];
+    route_root.copy_from_slice(&b[329..361]);
+    let mut self_template = [0u8; 32];
+    self_template.copy_from_slice(&b[361..393]);
+    let peer_count = b[393];
+    let mut peer_id_0 = [0u8; 32];
+    peer_id_0.copy_from_slice(&b[394..426]);
+    let mut peer_id_1 = [0u8; 32];
+    peer_id_1.copy_from_slice(&b[426..458]);
+
     Dna {
         covenant_id,
         generation,
@@ -151,6 +166,11 @@ fn parse_dna(b: &[u8]) -> Dna {
         payout_a,
         payout_b,
         payout_house,
+        route_root,
+        self_template,
+        peer_count,
+        peer_id_0,
+        peer_id_1,
     }
 }
 
@@ -351,7 +371,7 @@ fn walk_merkle(
 fn main() {
     let old_dna_bytes: Vec<u8> = env::read();
     let new_dna_bytes: Vec<u8> = env::read();
-    let transition: u8 = env::read(); // 0=owner-sig (vault/pool-open/game-open), 1=XMSS check-in, 2=privacy withdrawal, 3=game resolve
+    let transition: u8 = env::read(); // 0=owner-sig, 1=XMSS check-in, 2=privacy withdrawal, 3=game resolve, 4=nervous-system route-validated moult
 
     let old_dna = parse_dna(&old_dna_bytes);
     let new_dna = parse_dna(&new_dna_bytes);
@@ -360,7 +380,14 @@ fn main() {
     assert_eq!(old_dna.covenant_id, new_dna.covenant_id, "covenant_id mutated");
     assert_eq!(new_dna.generation, old_dna.generation + 1, "generation must advance by 1");
     assert_eq!(new_dna.prev_mode, old_dna.mode, "prev_mode must equal old.mode");
-    assert!(mode_transition_allowed(old_dna.mode, new_dna.mode), "illegal mode transition");
+    // Transition 4 (nervous system) authorizes its own (from_mode, to_mode) pair via a
+    // Merkle-inclusion proof against route_root instead of this hardcoded table -- that's
+    // the whole point of Chromosome 10: new routes can be wired in by the owner (a new
+    // route_root) without ever redeploying this guest. Every other transition kind still
+    // goes through the hardcoded allow-list below.
+    if transition != 4 {
+        assert!(mode_transition_allowed(old_dna.mode, new_dna.mode), "illegal mode transition");
+    }
 
     if transition == 0 {
         // ── Stage 1 style: owner-secret authorized transition (stem<->vault, or arming sentinel) ──
@@ -592,6 +619,46 @@ fn main() {
         assert_eq!(new_dna.payout_a, payout_a, "payout_a mismatch vs choreography");
         assert_eq!(new_dna.payout_b, payout_b, "payout_b mismatch vs choreography");
         assert_eq!(new_dna.payout_house, payout_house, "payout_house mismatch vs choreography");
+    } else if transition == 4 {
+        // ── Stage 5 real logic: nervous system (Chromosome 10) ──
+        // Instead of a hardcoded match arm, this transition authorizes ANY (from_mode,
+        // to_mode) pair that the owner has wired into route_root — a Merkle tree of
+        // allowed routes. Rewiring the brain (adding a new allowed moult) only requires
+        // an owner-signed route_root update, never a new guest deployment. This is the
+        // scorpion's "ventral nerve cord": the wiring diagram of which thoughts are
+        // possible, expressed as data instead of code.
+        assert_eq!(old_dna.route_root, new_dna.route_root, "route_root immutable during a route-validated moult");
+        assert_eq!(old_dna.self_template, new_dna.self_template, "self_template is set at birth, immutable");
+        assert_eq!(old_dna.peer_count, new_dna.peer_count, "peer_count unchanged by a route moult");
+        assert_eq!(old_dna.peer_id_0, new_dna.peer_id_0, "peer_id_0 unchanged by a route moult");
+        assert_eq!(old_dna.peer_id_1, new_dna.peer_id_1, "peer_id_1 unchanged by a route moult");
+
+        let route_leaf_index: u32 = env::read();
+        let auth_path: Vec<[u8; 32]> = env::read(); // sibling hashes, leaf -> root
+        let auth_dirs: Vec<u8> = env::read(); // 0 = sibling on right, 1 = sibling on left
+
+        assert_eq!(auth_path.len(), auth_dirs.len(), "auth_path/auth_dirs length mismatch");
+
+        let mut leaf_buf = Vec::with_capacity(2);
+        leaf_buf.push(old_dna.mode);
+        leaf_buf.push(new_dna.mode);
+        let mut node = sha256(&leaf_buf);
+
+        let mut idx = route_leaf_index;
+        for (sibling, dir) in auth_path.iter().zip(auth_dirs.iter()) {
+            let mut buf = Vec::with_capacity(64);
+            if *dir == 0 {
+                buf.extend_from_slice(&node);
+                buf.extend_from_slice(sibling);
+            } else {
+                buf.extend_from_slice(sibling);
+                buf.extend_from_slice(&node);
+            }
+            node = sha256(&buf);
+            idx /= 2;
+        }
+
+        assert_eq!(node, old_dna.route_root, "route not found in route_root -- this moult is not wired into the nervous system");
     } else {
         panic!("unknown transition kind");
     }
