@@ -1,0 +1,21 @@
+Meet the Scorpion. A living organism, built entirely from Kaspa blockchain primitives, proven on mainnet, one organ at a time. This is how its brain came together, stage by stage.
+
+Stage one: identity. A single zero-knowledge circuit enforces who owns the organism, and makes sure its covenant ID can never be forged, or duplicated, across a state change.
+
+Stage two: the immune system. Hash-based signatures replace elliptic curve keys entirely. A post-quantum check-in proves the owner is still alive, without ever touching a signature a quantum computer could break.
+
+Stage three: privacy. A zero-knowledge proof verifies membership in a shielded pool, and reveals a single-use nullifier. Enough to stop double spending, without ever revealing which deposit is being withdrawn.
+
+Stage four: game theory. Two players seal their moves. The circuit resolves the outcome, and payouts split automatically. No trusted referee required.
+
+Stage five: the nervous system. Mode transitions are authorized by a Merkle proof, instead of hardcoded logic. So the owner can rewire what's legal, without ever redeploying the brain.
+
+Stage six: reproduction. One proof spawns multiple children in a single transition. Each child's identity is derived on-chain from its parent, inheriting ownership, and starting a fresh generation zero.
+
+Stage seven: memory. Every state links backward, by hash, to the exact state before it. An unforgeable, provable history, all the way back to the moment of creation.
+
+Stage eight: escrow. A neutral arbiter can resolve a dispute by proving a secret. Or, if no one shows up, a permissionless timeout protects the buyer automatically. Zero signature required.
+
+Stage nine: metabolism. Every heartbeat costs something real. Reserves can never hit zero. And if the organism starts spending too fast, for too long, it locks down, on its own, before it bleeds out.
+
+Ten chromosomes. Nine stages. One evolving proof system. The Scorpion's brain is complete, and proven, entirely on Kaspa.

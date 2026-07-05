@@ -1,0 +1,65 @@
+[Script Info]
+Title: Scorpion Explainer v5 Captions
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Caption,Arial Black,64,&H00FFFFFF,&H00FFFFFF,&H00101010,&H90000000,1,0,0,0,100,100,0,0,3,3,1,2,120,120,80,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.25,0:00:03.27,Caption,,0,0,0,,Meet the Scorpion A living organism
+Dialogue: 0,0:00:03.44,0:00:05.98,Caption,,0,0,0,,built entirely from Kaspa blockchain primitives
+Dialogue: 0,0:00:06.22,0:00:08.08,Caption,,0,0,0,,proven on mainnet one organ at
+Dialogue: 0,0:00:08.09,0:00:10.15,Caption,,0,0,0,,a time This is how its
+Dialogue: 0,0:00:10.16,0:00:12.57,Caption,,0,0,0,,brain came together stage by stage
+Dialogue: 0,0:00:13.40,0:00:17.05,Caption,,0,0,0,,Stage one identity A single zero-knowledge
+Dialogue: 0,0:00:17.06,0:00:19.12,Caption,,0,0,0,,circuit enforces who owns the organism
+Dialogue: 0,0:00:19.46,0:00:21.09,Caption,,0,0,0,,and makes sure its covenant ID
+Dialogue: 0,0:00:21.10,0:00:23.20,Caption,,0,0,0,,can never be forged or duplicated
+Dialogue: 0,0:00:23.40,0:00:26.30,Caption,,0,0,0,,across a state change Stage two
+Dialogue: 0,0:00:26.54,0:00:29.96,Caption,,0,0,0,,the immune system Hash-based signatures replace
+Dialogue: 0,0:00:29.97,0:00:33.44,Caption,,0,0,0,,elliptic curve keys entirely A post-quantum
+Dialogue: 0,0:00:33.46,0:00:35.04,Caption,,0,0,0,,check-in proves the owner is still
+Dialogue: 0,0:00:35.05,0:00:37.43,Caption,,0,0,0,,alive without ever touching a signature
+Dialogue: 0,0:00:37.45,0:00:40.37,Caption,,0,0,0,,a quantum computer could break Stage
+Dialogue: 0,0:00:40.38,0:00:44.07,Caption,,0,0,0,,three privacy A zero-knowledge proof verifies
+Dialogue: 0,0:00:44.08,0:00:45.99,Caption,,0,0,0,,membership in a shielded pool and
+Dialogue: 0,0:00:46.00,0:00:49.10,Caption,,0,0,0,,reveals a single-use nullifier Enough to
+Dialogue: 0,0:00:49.12,0:00:51.58,Caption,,0,0,0,,stop double spending without ever revealing
+Dialogue: 0,0:00:51.59,0:00:54.60,Caption,,0,0,0,,which deposit is being withdrawn Stage
+Dialogue: 0,0:00:54.61,0:00:57.61,Caption,,0,0,0,,four game theory Two players seal
+Dialogue: 0,0:00:57.63,0:01:00.23,Caption,,0,0,0,,their moves The circuit resolves the
+Dialogue: 0,0:01:00.25,0:01:03.89,Caption,,0,0,0,,outcome and payouts split automatically No
+Dialogue: 0,0:01:03.90,0:01:07.45,Caption,,0,0,0,,trusted referee required Stage five the
+Dialogue: 0,0:01:07.46,0:01:10.94,Caption,,0,0,0,,nervous system Mode transitions are authorized
+Dialogue: 0,0:01:10.96,0:01:12.61,Caption,,0,0,0,,by a Merkle proof instead of
+Dialogue: 0,0:01:12.63,0:01:15.52,Caption,,0,0,0,,hardcoded logic So the owner can
+Dialogue: 0,0:01:15.53,0:01:18.06,Caption,,0,0,0,,rewire what's legal without ever redeploying
+Dialogue: 0,0:01:18.07,0:01:22.41,Caption,,0,0,0,,the brain Stage six reproduction One
+Dialogue: 0,0:01:22.42,0:01:24.22,Caption,,0,0,0,,proof spawns multiple children in a
+Dialogue: 0,0:01:24.24,0:01:27.60,Caption,,0,0,0,,single transition Each child's identity is
+Dialogue: 0,0:01:27.61,0:01:30.21,Caption,,0,0,0,,derived on-chain from its parent inheriting
+Dialogue: 0,0:01:30.22,0:01:32.53,Caption,,0,0,0,,ownership and starting a fresh generation
+Dialogue: 0,0:01:32.54,0:01:36.84,Caption,,0,0,0,,zero Stage seven memory Every state
+Dialogue: 0,0:01:36.86,0:01:38.74,Caption,,0,0,0,,links backward by hash to the
+Dialogue: 0,0:01:38.76,0:01:41.89,Caption,,0,0,0,,exact state before it An unforgeable
+Dialogue: 0,0:01:42.06,0:01:43.97,Caption,,0,0,0,,provable history all the way back
+Dialogue: 0,0:01:43.98,0:01:46.56,Caption,,0,0,0,,to the moment of creation Stage
+Dialogue: 0,0:01:46.57,0:01:49.54,Caption,,0,0,0,,eight escrow A neutral arbiter can
+Dialogue: 0,0:01:49.55,0:01:51.04,Caption,,0,0,0,,resolve a dispute by proving a
+Dialogue: 0,0:01:51.05,0:01:53.83,Caption,,0,0,0,,secret Or if no one shows
+Dialogue: 0,0:01:53.84,0:01:55.98,Caption,,0,0,0,,up a permissionless timeout protects the
+Dialogue: 0,0:01:55.99,0:02:00.84,Caption,,0,0,0,,buyer automatically Zero signature required Stage
+Dialogue: 0,0:02:00.85,0:02:04.57,Caption,,0,0,0,,nine metabolism Every heartbeat costs something
+Dialogue: 0,0:02:04.59,0:02:07.47,Caption,,0,0,0,,real Reserves can never hit zero
+Dialogue: 0,0:02:08.30,0:02:10.08,Caption,,0,0,0,,And if the organism starts spending
+Dialogue: 0,0:02:10.09,0:02:11.96,Caption,,0,0,0,,too fast for too long it
+Dialogue: 0,0:02:11.98,0:02:13.90,Caption,,0,0,0,,locks down on its own before
+Dialogue: 0,0:02:13.91,0:02:17.94,Caption,,0,0,0,,it bleeds out Ten chromosomes Nine
+Dialogue: 0,0:02:17.95,0:02:22.02,Caption,,0,0,0,,stages One evolving proof system The
+Dialogue: 0,0:02:22.04,0:02:24.32,Caption,,0,0,0,,Scorpion's brain is complete and proven
+Dialogue: 0,0:02:24.49,0:02:25.85,Caption,,0,0,0,,entirely on Kaspa
