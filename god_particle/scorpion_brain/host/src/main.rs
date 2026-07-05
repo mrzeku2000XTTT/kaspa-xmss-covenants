@@ -44,7 +44,12 @@ fn build_dna(
     d.extend_from_slice(&[0u8; 32]); // beneficiary_commit
     d.extend_from_slice(&0u32.to_le_bytes()); // grace_blocks
     d.extend_from_slice(&0u32.to_le_bytes()); // heartbeat_count
-    assert_eq!(d.len(), 163);
+    // Chromosome 4 (privacy) — zeroed, unused in stem/vault modes.
+    d.extend_from_slice(&[0u8; 32]); // merkle_root
+    d.extend_from_slice(&[0u8; 32]); // nullifier_hash
+    d.extend_from_slice(&0u32.to_le_bytes()); // nullifier_count
+    d.push(0); // tree_depth
+    assert_eq!(d.len(), 232);
     d
 }
 

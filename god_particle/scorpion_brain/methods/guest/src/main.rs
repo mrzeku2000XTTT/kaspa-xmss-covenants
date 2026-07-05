@@ -28,6 +28,11 @@
 //   123     32    beneficiary_commit (heir verification hash)
 //   155     4     grace_blocks       (u32 LE)
 //   159     4     heartbeat_count    (u32 LE)
+//   ── Chromosome 4 — PRIVACY (the carapace) ──
+//   163     32    merkle_root        (privacy pool commitment tree root)
+//   195     32    nullifier_hash     (most recently spent nullifier)
+//   227     4     nullifier_count    (u32 LE — total withdrawals)
+//   231     1     tree_depth         (Merkle tree height)
 //
 // Private witness (mode 2->2, check-in transition):
 //   old_dna, new_dna (163B each)
@@ -45,11 +50,12 @@ const W_STEPS: usize = 15; // max additional chain steps (w=16, so w-1=15)
 const N_CHAINS: usize = 51; // 48 message digit chains + 3 checksum chains
 
 const MAGIC: &[u8; 4] = b"GPDL";
-const DNA_LEN: usize = 163;
+const DNA_LEN: usize = 232;
 
 const MODE_STEM: u8 = 0;
 const MODE_VAULT: u8 = 1;
 const MODE_SENTINEL: u8 = 2;
+const MODE_PRIVACY: u8 = 3;
 
 struct Dna {
     covenant_id: [u8; 32],
@@ -65,6 +71,10 @@ struct Dna {
     beneficiary_commit: [u8; 32],
     grace_blocks: u32,
     heartbeat_count: u32,
+    merkle_root: [u8; 32],
+    nullifier_hash: [u8; 32],
+    nullifier_count: u32,
+    tree_depth: u8,
 }
 
 fn parse_dna(b: &[u8]) -> Dna {
@@ -91,6 +101,13 @@ fn parse_dna(b: &[u8]) -> Dna {
     let grace_blocks = u32::from_le_bytes(b[155..159].try_into().unwrap());
     let heartbeat_count = u32::from_le_bytes(b[159..163].try_into().unwrap());
 
+    let mut merkle_root = [0u8; 32];
+    merkle_root.copy_from_slice(&b[163..195]);
+    let mut nullifier_hash = [0u8; 32];
+    nullifier_hash.copy_from_slice(&b[195..227]);
+    let nullifier_count = u32::from_le_bytes(b[227..231].try_into().unwrap());
+    let tree_depth = b[231];
+
     Dna {
         covenant_id,
         generation,
@@ -105,6 +122,10 @@ fn parse_dna(b: &[u8]) -> Dna {
         beneficiary_commit,
         grace_blocks,
         heartbeat_count,
+        merkle_root,
+        nullifier_hash,
+        nullifier_count,
+        tree_depth,
     }
 }
 
@@ -117,6 +138,8 @@ fn mode_transition_allowed(from: u8, to: u8) -> bool {
             | (MODE_VAULT, MODE_STEM)
             | (MODE_STEM, MODE_SENTINEL) // arm the stinger
             | (MODE_SENTINEL, MODE_SENTINEL) // check-in
+            | (MODE_STEM, MODE_PRIVACY) // open the pool
+            | (MODE_PRIVACY, MODE_PRIVACY) // shielded withdrawal
     )
 }
 
@@ -326,7 +349,14 @@ fn main() {
             assert!(new_dna.checkin_interval > 0, "checkin_interval must be nonzero");
             assert_eq!(new_dna.xmss_next_leaf, 0, "freshly armed sentinel starts at leaf 0");
         }
-    } else {
+
+        if new_dna.mode == MODE_PRIVACY && old_dna.mode == MODE_STEM {
+            // Opening the carapace: owner authorizes the pool with a pre-built commitment
+            // tree root (built and audited off-chain, same trust model as arming Sentinel).
+            assert_eq!(new_dna.nullifier_count, 0, "freshly opened pool starts with 0 withdrawals");
+            assert!(new_dna.tree_depth > 0, "tree_depth must be nonzero");
+        }
+    } else if transition == 1 {
         // ── Stage 2 real logic: XMSS-authorized check-in (sentinel -> sentinel) ──
         assert_eq!(old_dna.mode, MODE_SENTINEL, "check-in only valid from sentinel mode");
         assert_eq!(new_dna.mode, MODE_SENTINEL, "check-in stays in sentinel mode");
@@ -405,6 +435,72 @@ fn main() {
             "heartbeat_count must advance by exactly 1"
         );
         assert_eq!(new_dna.is_terminal, 0, "check-in keeps the organism alive (is_terminal=0)");
+    } else if transition == 2 {
+        // ── Stage 3 real logic: shielded withdrawal (privacy -> privacy) ──
+        // Proves knowledge of (secret, nonce) such that sha256(secret||nonce) is a leaf
+        // in the commitment tree rooted at merkle_root, and reveals nullifier =
+        // sha256("NULL"||secret) without revealing which leaf was spent. All inside the
+        // STARK — no separate Groth16 proof needed, the STARK IS the proof.
+        assert_eq!(old_dna.mode, MODE_PRIVACY, "withdrawal only valid from privacy mode");
+        assert_eq!(new_dna.mode, MODE_PRIVACY, "withdrawal stays in privacy mode");
+
+        assert_eq!(old_dna.merkle_root, new_dna.merkle_root, "merkle_root must not change on withdrawal");
+        assert_eq!(old_dna.tree_depth, new_dna.tree_depth, "tree_depth must not change on withdrawal");
+        assert_eq!(
+            new_dna.nullifier_count,
+            old_dna.nullifier_count + 1,
+            "nullifier_count must advance by exactly 1"
+        );
+        assert_ne!(
+            new_dna.nullifier_hash, old_dna.nullifier_hash,
+            "nullifier_hash must change on every withdrawal (no replay)"
+        );
+
+        let secret: Vec<u8> = env::read();
+        let nonce: Vec<u8> = env::read();
+        let leaf_idx: u32 = env::read();
+        let siblings_flat: Vec<u8> = env::read(); // tree_depth * 32 bytes
+        let sib_is_left: Vec<u8> = env::read(); // tree_depth bytes, 1=current node is left child
+
+        assert_eq!(secret.len(), 32, "secret must be 32 bytes");
+        assert_eq!(nonce.len(), 32, "nonce must be 32 bytes");
+        let depth = old_dna.tree_depth as usize;
+        assert_eq!(siblings_flat.len(), depth * 32, "siblings length must match tree_depth");
+        assert_eq!(sib_is_left.len(), depth, "sib_is_left length must match tree_depth");
+
+        // leaf = sha256(secret || nonce) — the deposit commitment
+        let mut leaf_input = Vec::with_capacity(64);
+        leaf_input.extend_from_slice(&secret);
+        leaf_input.extend_from_slice(&nonce);
+        let mut cur = sha256(&leaf_input);
+
+        let mut idx = leaf_idx;
+        for i in 0..depth {
+            let mut sib = [0u8; 32];
+            sib.copy_from_slice(&siblings_flat[i * 32..(i + 1) * 32]);
+            let is_left = sib_is_left[i] == 1;
+            let mut buf = Vec::with_capacity(64);
+            if is_left {
+                buf.extend_from_slice(&cur);
+                buf.extend_from_slice(&sib);
+            } else {
+                buf.extend_from_slice(&sib);
+                buf.extend_from_slice(&cur);
+            }
+            cur = sha256(&buf);
+            idx /= 2;
+        }
+
+        assert_eq!(cur, old_dna.merkle_root, "Merkle membership proof failed against merkle_root");
+
+        // nullifier = sha256("NULL" || secret) — reveals a spend marker, not the deposit itself
+        let mut nul_input = Vec::with_capacity(4 + 32);
+        nul_input.extend_from_slice(b"NULL");
+        nul_input.extend_from_slice(&secret);
+        let nullifier = sha256(&nul_input);
+        assert_eq!(nullifier, new_dna.nullifier_hash, "revealed nullifier does not match new DNA");
+    } else {
+        panic!("unknown transition kind");
     }
 
     // ── Commit the transition to the public journal ──

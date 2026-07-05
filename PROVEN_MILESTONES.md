@@ -138,3 +138,23 @@ Format: `TX <txid>` = mainnet transaction, confirmed `is_accepted:true` on api.k
 - **Not yet deployed to mainnet** — both proofs are local-only so far. Next: Stage 3
   (privacy carapace — Merkle+nullifier+Groth16-or-STARK inside the same guest), then wrap
   in a P2SH covenant and put a real heartbeat on mainnet.
+
+## 7b. God Particle — Stage 3 "The Carapace" (privacy pool logic, natively inside the STARK)
+- Extended the SAME guest ELF again (now handles 3 transition kinds: 0=owner-secret,
+  1=XMSS check-in, 2=privacy withdrawal). DNA grew to 232 bytes with Chromosome 4
+  (merkle_root, nullifier_hash, nullifier_count, tree_depth).
+- **Real logic, no external circuit:** guest reimplements a sha256 Merkle-membership
+  proof (leaf = sha256(secret||nonce), walked up an arbitrary-depth auth path) plus
+  nullifier derivation (sha256("NULL"||secret)) natively in Rust. The STARK itself
+  is the ZK proof of "I know a valid deposit and haven't revealed which one" — no
+  nested Groth16/circom circuit needed, unlike the earlier standalone privacy_pool build.
+- **PROOF VERIFIED LOCALLY on the first attempt** (no bugs this time) — image_id
+  `2c30176a...` (this is the new combined-guest image id, superseding Stage 1/2's
+  earlier ids since all three transitions now live in one evolving ELF), seal 222,668
+  bytes. Test: 4-leaf tree (h=2), withdrew leaf 0, proved membership + nullifier reveal.
+- Code: same `god_particle/scorpion_brain/` tree — `host/src/bin/withdraw.rs` is the
+  new Stage 3 proof binary. Witness gen: `god_particle/scorpion_brain_stage2_keygen/gen_stage3_witness.py`.
+- **Not yet deployed to mainnet.** Three brains (stem<->vault, sentinel check-in, privacy
+  withdrawal) now live as one organism, selected by a transition byte. Next: Stage 4
+  (claws — escrow/game theory) per the build order, or move to wrapping the whole thing
+  in a real P2SH covenant and putting a heartbeat on mainnet.

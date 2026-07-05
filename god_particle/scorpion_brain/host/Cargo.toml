@@ -11,6 +11,10 @@ path = "src/main.rs"
 name = "checkin"
 path = "src/bin/checkin.rs"
 
+[[bin]]
+name = "withdraw"
+path = "src/bin/withdraw.rs"
+
 [dependencies]
 methods = { path = "../methods" }
 risc0-zkvm = { version = "^3.0.5" }

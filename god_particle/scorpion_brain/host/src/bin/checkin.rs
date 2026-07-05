@@ -52,7 +52,12 @@ fn build_sentinel_dna(
     d.extend_from_slice(beneficiary_commit);
     d.extend_from_slice(&grace_blocks.to_le_bytes());
     d.extend_from_slice(&heartbeat_count.to_le_bytes());
-    assert_eq!(d.len(), 163);
+    // Chromosome 4 (privacy) — zeroed, unused in sentinel mode.
+    d.extend_from_slice(&[0u8; 32]); // merkle_root
+    d.extend_from_slice(&[0u8; 32]); // nullifier_hash
+    d.extend_from_slice(&0u32.to_le_bytes()); // nullifier_count
+    d.push(0); // tree_depth
+    assert_eq!(d.len(), 232);
     d
 }
 
