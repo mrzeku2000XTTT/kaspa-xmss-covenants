@@ -271,3 +271,32 @@ Format: `TX <txid>` = mainnet transaction, confirmed `is_accepted:true` on api.k
 - Companion document: `god_particle/GOSPEL_OF_THE_SCORPION.md` -- a plain-
   language teaching mapping each proven stage to what it actually means, written
   for anyone (not just engineers) to read, alongside the verifiable source.
+
+## 7g. God Particle — Stage 8 "The Pedipalps" (Chromosome 8, ESCROW / the arbiter, "go find help")
+- Chromosome 8 added: arbiter_commit(32) + buyer_commit(32) + seller_commit(32) +
+  dispute_deadline(8) + escrow_amount(8) + winner(1) + dispute_state(1) = 114 bytes.
+  DNA grew from 569 -> 683 bytes. New MODE_ESCROW=5, wired into mode_transition_allowed
+  (STEM->ESCROW to open, ESCROW->ESCROW to resolve).
+- New transition kind (transition=6): the claws grip disputed value between two parties
+  who can't resolve it alone. Two ways out, both proven:
+  - **Help arrives:** a trusted third party (the arbiter) proves knowledge of their own
+    secret (hash-preimage of arbiter_commit) and hands down a decision (buyer or seller
+    wins). This is the one place in the whole organism where a party OUTSIDE
+    owner/buyer/seller has any say at all.
+  - **Help never comes:** the dispute_deadline lapses, and the buyer is protected by a
+    safe, permissionless, zero-signature default -- no arbiter needed.
+- **PROOF VERIFIED LOCALLY, both paths, first try:** arbiter-resolved case (seller
+  awarded, current_daa < deadline) and timeout case (buyer refunded by default,
+  current_daa > deadline) both pass independently.
+- **Negative test:** fed an impostor's fake secret instead of the real arbiter's --
+  guest correctly panicked ("arbiter_secret does not match the arbiter_commit on
+  record"). A false helper cannot resolve the dispute. Restored the correct file after.
+- Followed the mandatory key-backup rule: arbiter/buyer/seller secrets generated via
+  os.urandom and saved to `kaspa_wrpc/keys/scorpion_stage8_escrow_secrets.json` BEFORE
+  any proving script touched them.
+- Code: `host/src/bin/resolve_escrow.rs` (new host binary, `--mode=arbiter|timeout`),
+  guest transition=6 branch in `methods/guest/src/main.rs`.
+- Eight chromosomes of the God Particle genome now proven inside one evolving RISC0
+  guest ELF: identity, ownership, XMSS check-in, privacy withdrawal, game resolve,
+  route-validated moult, reproduction+memory, escrow/arbiter. All local-proof-only so
+  far -- nothing deployed to mainnet yet.

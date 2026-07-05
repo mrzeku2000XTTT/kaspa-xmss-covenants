@@ -50,13 +50,14 @@ const W_STEPS: usize = 15; // max additional chain steps (w=16, so w-1=15)
 const N_CHAINS: usize = 51; // 48 message digit chains + 3 checksum chains
 
 const MAGIC: &[u8; 4] = b"GPDL";
-const DNA_LEN: usize = 569;
+const DNA_LEN: usize = 683;
 
 const MODE_STEM: u8 = 0;
 const MODE_VAULT: u8 = 1;
 const MODE_SENTINEL: u8 = 2;
 const MODE_PRIVACY: u8 = 3;
 const MODE_GAME: u8 = 4;
+const MODE_ESCROW: u8 = 5;
 
 struct Dna {
     covenant_id: [u8; 32],
@@ -96,6 +97,13 @@ struct Dna {
     transition_count: u32,
     creation_daa: u64,
     creation_txid: [u8; 32],
+    arbiter_commit: [u8; 32],
+    buyer_commit: [u8; 32],
+    seller_commit: [u8; 32],
+    dispute_deadline: u64,
+    escrow_amount: u64,
+    winner: u8,
+    dispute_state: u8,
 }
 
 fn parse_dna(b: &[u8]) -> Dna {
@@ -162,6 +170,17 @@ fn parse_dna(b: &[u8]) -> Dna {
     let mut creation_txid = [0u8; 32];
     creation_txid.copy_from_slice(&b[537..569]);
 
+    let mut arbiter_commit = [0u8; 32];
+    arbiter_commit.copy_from_slice(&b[569..601]);
+    let mut buyer_commit = [0u8; 32];
+    buyer_commit.copy_from_slice(&b[601..633]);
+    let mut seller_commit = [0u8; 32];
+    seller_commit.copy_from_slice(&b[633..665]);
+    let dispute_deadline = u64::from_le_bytes(b[665..673].try_into().unwrap());
+    let escrow_amount = u64::from_le_bytes(b[673..681].try_into().unwrap());
+    let winner = b[681];
+    let dispute_state = b[682];
+
     Dna {
         covenant_id,
         generation,
@@ -200,6 +219,13 @@ fn parse_dna(b: &[u8]) -> Dna {
         transition_count,
         creation_daa,
         creation_txid,
+        arbiter_commit,
+        buyer_commit,
+        seller_commit,
+        dispute_deadline,
+        escrow_amount,
+        winner,
+        dispute_state,
     }
 }
 
@@ -216,6 +242,8 @@ fn mode_transition_allowed(from: u8, to: u8) -> bool {
             | (MODE_PRIVACY, MODE_PRIVACY) // shielded withdrawal
             | (MODE_STEM, MODE_GAME) // open the courtship dance
             | (MODE_GAME, MODE_GAME) // resolve the dance
+            | (MODE_STEM, MODE_ESCROW) // extend the claws, enter escrow
+            | (MODE_ESCROW, MODE_ESCROW) // resolve the dispute (arbiter or timeout)
     )
 }
 
@@ -779,6 +807,42 @@ fn main() {
             assert_eq!(child.prev_state_hash, old_dna_hash, "child's first memory must be the parent's exact state at the moment of spawning");
             assert_ne!(child.creation_txid, old_dna.creation_txid, "child must have its own birth certificate, not the parent's");
             assert!(child.creation_daa >= old_dna.creation_daa, "child cannot be born before its own parent existed");
+        }
+    } else if transition == 6 {
+        // ── Stage 8: ESCROW (Chromosome 8, the pedipalps -- "how do I resolve conflict?") ──
+        // The claws grip disputed value between two parties who don't trust each other.
+        // Two ways out: a trusted third party (the arbiter) steps in and decides, OR --
+        // if no help ever comes -- the deadline passes and the buyer is protected by
+        // default. This is the literal on-chain meaning of "go find help": a dispute you
+        // cannot resolve alone can still be resolved, either by someone qualified showing
+        // up, or by a safe, permissionless fallback if they never do.
+        assert_eq!(old_dna.mode, MODE_ESCROW, "resolve only valid from escrow mode");
+        assert_eq!(new_dna.mode, MODE_ESCROW, "resolve stays in escrow mode");
+        assert_eq!(old_dna.dispute_state, 1, "dispute must be in 'raised' state before it can be resolved");
+        assert_eq!(new_dna.dispute_state, 2, "resolution must mark the dispute 'resolved'");
+
+        // Chromosome 8 fields that must never change across the resolution itself.
+        assert_eq!(new_dna.arbiter_commit, old_dna.arbiter_commit, "arbiter_commit must persist");
+        assert_eq!(new_dna.buyer_commit, old_dna.buyer_commit, "buyer_commit must persist");
+        assert_eq!(new_dna.seller_commit, old_dna.seller_commit, "seller_commit must persist");
+        assert_eq!(new_dna.dispute_deadline, old_dna.dispute_deadline, "dispute_deadline must persist");
+        assert_eq!(new_dna.escrow_amount, old_dna.escrow_amount, "escrow_amount must persist");
+
+        let current_daa: u64 = env::read();
+
+        if current_daa > old_dna.dispute_deadline {
+            // No help ever came. Permissionless, zero-signature timeout: the buyer is
+            // protected by default (the party who put value at risk gets it back).
+            assert_eq!(new_dna.winner, 0, "on timeout, the buyer is refunded by default -- no signature required");
+        } else {
+            // Help arrived. The arbiter proves knowledge of their own secret and hands
+            // down a decision -- this is the one and only place in the whole organism
+            // where a THIRD PARTY, external to owner/buyer/seller, has any say at all.
+            let arbiter_secret: Vec<u8> = env::read();
+            assert_eq!(arbiter_secret.len(), 32, "arbiter_secret must be 32 bytes");
+            let h = sha256(&arbiter_secret);
+            assert_eq!(h, old_dna.arbiter_commit, "arbiter_secret does not match the arbiter_commit on record");
+            assert!(new_dna.winner == 0 || new_dna.winner == 1, "winner must be buyer(0) or seller(1)");
         }
     } else {
         panic!("unknown transition kind");
