@@ -237,3 +237,37 @@ Format: `TX <txid>` = mainnet transaction, confirmed `is_accepted:true` on api.k
   XMSS check-in, privacy withdrawal, game resolve, route-validated moult, and now
   reproduction/fanout -- selected by a transition byte in one evolving RISC0 guest ELF.
   Not yet deployed to mainnet.
+
+## 7f. God Particle — Stage 7 "Memory" (the ventral ganglia, the incarnation clause)
+- Chromosome 7 added: prev_state_hash(32) + transition_count(4) + creation_daa(8) +
+  creation_txid(32) = 76 bytes. DNA grew from 493 -> 569 bytes.
+- GLOBAL rule now enforced across ALL 6 transition kinds: every new_dna must
+  hash-link backward to the exact old_dna it came from
+  (`new.prev_state_hash == sha256(old_dna_bytes)`), transition_count advances by
+  exactly 1, and creation_daa/creation_txid (the birth certificate) are immutable
+  once set -- verified by re-proving Stage 1 (owner-secret moult) end-to-end with
+  the new global check active, no regression.
+- The deliberate exception, and the actual point of this stage: a child spawned
+  during reproduction (transition=5) does NOT continue the parent's memory chain.
+  It starts a wholly new one -- transition_count=0, its own distinct creation_daa/
+  creation_txid (a fresh birth certificate, provably not a copy of the parent's).
+  But its one unerasable, unforgeable first memory is `sha256(parent_dna_at_the_
+  moment_of_spawning)` -- an exact, checked link to the precise state it came from.
+- **PROOF VERIFIED LOCALLY**, reproving the Stage 6 reproduction case with full
+  Chromosome 7 semantics active (parent continues its own chain normally; both
+  children get old_hash as their first memory + distinct fresh birth certificates).
+- **Negative test:** deliberately fed a child a fake first memory (the parent's
+  own creation_txid, instead of the true old_dna hash) -- guest correctly
+  panicked ("child's first memory must be the parent's exact state at the moment
+  of spawning"). A false claim of origin does not verify. Restored the correct
+  file after.
+- Code: `append_memory()` + `sha256_bytes()`/`genesis_txid()` helpers added to
+  all 6 host binaries; guest global memory-chain assertions + child-specific
+  incarnation checks in `methods/guest/src/main.rs`.
+- Seven chromosomes of the God Particle genome now proven inside one evolving
+  RISC0 guest ELF: identity, ownership, XMSS check-in, privacy withdrawal, game
+  resolve, route-validated moult, reproduction+memory. All local-proof-only so
+  far -- nothing deployed to mainnet yet.
+- Companion document: `god_particle/GOSPEL_OF_THE_SCORPION.md` -- a plain-
+  language teaching mapping each proven stage to what it actually means, written
+  for anyone (not just engineers) to read, alongside the verifiable source.
