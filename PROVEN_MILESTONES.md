@@ -300,3 +300,23 @@ Format: `TX <txid>` = mainnet transaction, confirmed `is_accepted:true` on api.k
   guest ELF: identity, ownership, XMSS check-in, privacy withdrawal, game resolve,
   route-validated moult, reproduction+memory, escrow/arbiter. All local-proof-only so
   far -- nothing deployed to mainnet yet.
+
+### 7c. Stage 9 — Chromosome 5 (Metabolism) — local STARK proof verified (2026-07-05)
+
+Final chromosome built. DNA extended to 721 bytes. Metabolism chromosome enforces:
+- **fee_reserve strictly decreases every heartbeat** — every transition costs something real, no free actions
+- **fee_reserve > 0** — organism can never fully drain itself in one shot (starvation death)
+- **compute_budget in safe range [1, 3000]** — RISC0 mass cap safety (proven value 2700, entry 602)
+- **Cancer detection (rate limiting)** — rolling DAA window: if spends exceed rate_max_spend within rate_window blocks, organism locks down (apoptosis). Prevents parasitic draining by bugs or attackers.
+- **Policy immutability** — min_output/rate_window/rate_max_spend only tunable by owner (transition 0); all other transition kinds must leave metabolic policy unchanged
+
+Three proofs run:
+1. **HEARTBEAT** (healthy transition) — PROOF VERIFIED. image_id `e7c38dce...`, seal 222,668 bytes.
+2. **STARVE** (fee_reserve → 0) — CORRECTLY REJECTED: "organism starved -- fee_reserve hit zero, the heart cannot beat again"
+3. **CANCER** (rate limit exceeded inside window) — CORRECTLY REJECTED: "cancer detected -- spend rate exceeds rate_max_spend inside rate_window, apoptosis triggered"
+
+**All 10 chromosomes now proven in one evolving RISC0 guest ELF.** The scorpion brain is complete. DNA = 721 bytes, 8 transition kinds (0=owner, 1=XMSS, 2=privacy, 3=game, 4=route, 5=reproduction, 6=escrow), global metabolism checks apply to ALL transitions.
+
+This is the direct on-chain answer to our own 6.3 KAS of real losses — the metabolism chromosome is the scar tissue from entry 289, encoded as enforceable survival logic.
+
+Code: `god_particle/scorpion_brain/` (guest + host/src/bin/resolve_metabolism.rs).

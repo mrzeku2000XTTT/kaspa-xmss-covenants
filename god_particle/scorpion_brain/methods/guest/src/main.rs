@@ -50,7 +50,7 @@ const W_STEPS: usize = 15; // max additional chain steps (w=16, so w-1=15)
 const N_CHAINS: usize = 51; // 48 message digit chains + 3 checksum chains
 
 const MAGIC: &[u8; 4] = b"GPDL";
-const DNA_LEN: usize = 683;
+const DNA_LEN: usize = 721;
 
 const MODE_STEM: u8 = 0;
 const MODE_VAULT: u8 = 1;
@@ -104,10 +104,17 @@ struct Dna {
     escrow_amount: u64,
     winner: u8,
     dispute_state: u8,
+    compute_budget: u16,
+    fee_reserve: u64,
+    min_output: u64,
+    rate_window: u32,
+    rate_max_spend: u32,
+    window_start_daa: u64,
+    window_spend_count: u32,
 }
 
 fn parse_dna(b: &[u8]) -> Dna {
-    assert_eq!(b.len(), DNA_LEN, "DNA blob must be exactly 163 bytes");
+    assert_eq!(b.len(), DNA_LEN, "DNA blob must be exactly DNA_LEN bytes");
     assert_eq!(&b[0..4], MAGIC, "bad DNA magic — not a scorpion genome");
 
     let mut covenant_id = [0u8; 32];
@@ -181,6 +188,14 @@ fn parse_dna(b: &[u8]) -> Dna {
     let winner = b[681];
     let dispute_state = b[682];
 
+    let compute_budget = u16::from_le_bytes(b[683..685].try_into().unwrap());
+    let fee_reserve = u64::from_le_bytes(b[685..693].try_into().unwrap());
+    let min_output = u64::from_le_bytes(b[693..701].try_into().unwrap());
+    let rate_window = u32::from_le_bytes(b[701..705].try_into().unwrap());
+    let rate_max_spend = u32::from_le_bytes(b[705..709].try_into().unwrap());
+    let window_start_daa = u64::from_le_bytes(b[709..717].try_into().unwrap());
+    let window_spend_count = u32::from_le_bytes(b[717..721].try_into().unwrap());
+
     Dna {
         covenant_id,
         generation,
@@ -226,6 +241,13 @@ fn parse_dna(b: &[u8]) -> Dna {
         escrow_amount,
         winner,
         dispute_state,
+        compute_budget,
+        fee_reserve,
+        min_output,
+        rate_window,
+        rate_max_spend,
+        window_start_daa,
+        window_spend_count,
     }
 }
 
@@ -473,6 +495,44 @@ fn main() {
         assert_eq!(new_dna.transition_count, old_dna.transition_count + 1, "parent's transition_count must advance by exactly 1");
         assert_eq!(new_dna.creation_daa, old_dna.creation_daa, "parent's creation_daa is immutable");
         assert_eq!(new_dna.creation_txid, old_dna.creation_txid, "parent's creation_txid is immutable");
+    }
+
+    // ── Phase 1c: metabolic invariants (Chromosome 5 -- "how do I process?") ──
+    // This governs every single transition, of every kind, without exception: the organism
+    // cannot switch off its own metabolism by picking a different mode. Every heartbeat costs
+    // something real, it can never fully drain itself in one shot, and if it's spending too
+    // fast for too long it locks down (apoptosis) instead of letting a bug or an attacker
+    // bleed it dry. This chromosome is the direct on-chain answer to our own 6.3 KAS of real
+    // losses from unbounded, unmonitored spending across this whole project.
+    assert!(new_dna.compute_budget >= 1 && new_dna.compute_budget <= 3000,
+        "compute_budget out of the safe metabolic range (RISC0 mass cap)");
+    assert!(new_dna.fee_reserve < old_dna.fee_reserve,
+        "fee_reserve must strictly decrease -- every heartbeat costs something");
+    assert!(new_dna.fee_reserve > 0,
+        "organism starved -- fee_reserve hit zero, the heart cannot beat again");
+
+    // Policy fields are only owner-tunable (transition 0) -- every other transition kind
+    // must leave the organism's metabolic policy untouched.
+    if transition != 0 {
+        assert_eq!(new_dna.min_output, old_dna.min_output, "min_output is policy -- only the owner can retune metabolism");
+        assert_eq!(new_dna.rate_window, old_dna.rate_window, "rate_window is policy -- only the owner can retune metabolism");
+        assert_eq!(new_dna.rate_max_spend, old_dna.rate_max_spend, "rate_max_spend is policy -- only the owner can retune metabolism");
+    }
+
+    // Cancer detection: a rolling rate-limit window. current_daa is read globally (once,
+    // for every transition kind) so this check applies uniformly no matter which brain
+    // function is being proven.
+    let current_daa: u64 = env::read();
+    if current_daa - old_dna.window_start_daa > old_dna.rate_window as u64 {
+        // The window has expired -- a fresh window starts at this spend.
+        assert_eq!(new_dna.window_start_daa, current_daa, "expired rate window must reset to current_daa");
+        assert_eq!(new_dna.window_spend_count, 1, "a fresh window starts counting at 1");
+    } else {
+        // Still inside the current window -- the count can only advance if under the cap.
+        assert!(old_dna.window_spend_count < old_dna.rate_max_spend,
+            "cancer detected -- spend rate exceeds rate_max_spend inside rate_window, apoptosis triggered");
+        assert_eq!(new_dna.window_start_daa, old_dna.window_start_daa, "window_start_daa must persist mid-window");
+        assert_eq!(new_dna.window_spend_count, old_dna.window_spend_count + 1, "window_spend_count must advance by exactly 1");
     }
 
     if transition == 0 {
@@ -828,8 +888,7 @@ fn main() {
         assert_eq!(new_dna.dispute_deadline, old_dna.dispute_deadline, "dispute_deadline must persist");
         assert_eq!(new_dna.escrow_amount, old_dna.escrow_amount, "escrow_amount must persist");
 
-        let current_daa: u64 = env::read();
-
+        // current_daa is now read globally in Phase 1c (metabolism) -- reused here.
         if current_daa > old_dna.dispute_deadline {
             // No help ever came. Permissionless, zero-signature timeout: the buyer is
             // protected by default (the party who put value at risk gets it back).
