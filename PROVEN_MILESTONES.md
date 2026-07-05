@@ -339,3 +339,19 @@ Three new transitions, all proven locally via real RISC0/STARK `receipt.verify()
 Not yet proven: ASCEND (transition 9, FALLEN -> VAULT, requires 5 chained real redemption
 heartbeats — queued next). Nothing deployed to mainnet yet for this stage — local proof-of-mechanism
 only. Code: `covenants/scorpion_brain_stage11_fall_redemption/`.
+
+## 2026-07-05 (cont.) — Stage 11 COMPLETE: ASCEND proven, all 4 branches of Fall & Redemption verified
+
+Chained 5 real RISC0/STARK REDEEM proofs (redemption_progress 0->5) on top of a fresh FALLEN
+organism, then proved the final ASCEND transition (transition 9): FALLEN -> VAULT, owner
+resupplies fee_reserve (35M -> 95M sompi, the one deliberate exception to the global
+"fee_reserve must strictly decrease" rule -- a real sacrifice to earn a clean slate), and the
+entire Chromosome 11 record wiped to zero (fall_reason/fallen_at_daa/redemption_deadline/
+redemption_progress/fossilized). Negative test (ascending with insufficient redemption_progress)
+correctly rejected. 7 total proofs this run, all `receipt.verify()` passed.
+
+**Stage 11 (Fall & Redemption) is now fully proven locally across all four branches: FALL,
+REDEEM, ASCEND, FOSSILIZE.** The organism can genuinely fail, get a real second chance bounded
+by a protocol-fixed window, earn its way back with honest resupply, or truly die forever with
+no further transitions. Code + updated README: `covenants/scorpion_brain_stage11_fall_redemption/`.
+Nothing deployed to mainnet yet for this stage -- local proof-of-mechanism only.

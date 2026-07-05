@@ -42,12 +42,14 @@ chitin (covenant_id) persists, immutable, forever, but the organism is gone.
 
 ## Proof status (this session, 2026-07-05)
 
-All three local RISC0/STARK proofs generated and verified (`receipt.verify()` passed):
+All four local RISC0/STARK proof paths generated and verified (`receipt.verify()` passed):
 
 - **FALL**: genuine starvation (`fee_reserve=15M < min_output=20M`) -> `MODE_FALLEN`. Negative test (false starvation claim on a healthy organism) correctly rejected.
 - **REDEEM**: one honest heartbeat, `redemption_progress` 0->1, proof of `owner_secret`. Negative test (wrong owner_secret) correctly rejected.
 - **FOSSILIZE**: redemption window lapsed with only 2/5 progress -> `MODE_FOSSIL`. Two negative tests: fossilizing before the deadline lapses (rejected), and fossilizing an organism that already earned enough redemption (rejected -- should ascend, not die).
 
-**Not yet proven locally:** ASCEND (requires 5 chained real redemption heartbeats to reach threshold -- long-running, queued as next step). Nothing in this stage has been deployed to mainnet yet -- local proof-of-mechanism only, same status as Stages 1-9 before their eventual P2SH wrap (Stage 10 precedent: `covenants/scorpion_brain_stage10/`).
+- **ASCEND**: chained 5 real REDEEM proofs (redemption_progress 0->5), then the real ASCEND proof: FALLEN -> VAULT, owner resupplies fee_reserve (35M -> 95M, the one deliberate exception to "fee_reserve strictly decreases"), and the entire Chromosome 11 record is wiped to a clean slate (fall_reason/fallen_at_daa/redemption_deadline/redemption_progress/fossilized all zeroed). Negative test (ascend attempt with insufficient redemption_progress) correctly rejected.
 
-Files: `fall.rs`, `redeem.rs`, `fossilize.rs` (host binaries), `*_receipt.json` (proof artifacts -- public data only, no secrets). Guest logic lives in `god_particle/scorpion_brain/methods/guest/src/main.rs` (synced, now 741-byte DNA).
+**All four Stage 11 branches now proven locally, real RISC0/STARK proofs, `receipt.verify()` passed on every one.** Nothing in this stage has been deployed to mainnet yet -- local proof-of-mechanism only, same status as Stages 1-9 before their eventual P2SH wrap (Stage 10 precedent: `covenants/scorpion_brain_stage10/`).
+
+Files: `fall.rs`, `redeem.rs`, `fossilize.rs`, `ascend_chain.rs` (host binaries), `*_receipt.json` (proof artifacts -- public data only, no secrets). Guest logic lives in `god_particle/scorpion_brain/methods/guest/src/main.rs` (synced, now 741-byte DNA).
