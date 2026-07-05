@@ -320,3 +320,22 @@ Three proofs run:
 This is the direct on-chain answer to our own 6.3 KAS of real losses — the metabolism chromosome is the scar tissue from entry 289, encoded as enforceable survival logic.
 
 Code: `god_particle/scorpion_brain/` (guest + host/src/bin/resolve_metabolism.rs).
+
+## 2026-07-05 — Stage 11: Fall & Redemption (Chromosome 11) — local proof, all 3 branches
+
+Extended the complete 10-chromosome scorpion_brain (Stage 10 mainnet hatch already proven,
+see `covenants/scorpion_brain_stage10/`) with a new afterlife chromosome. DNA grows 721 -> 741 bytes.
+
+Three new transitions, all proven locally via real RISC0/STARK `receipt.verify()`:
+- **FALL** (transition 7, permissionless): active organism -> MODE_FALLEN, on proof of genuine
+  starvation, cancer (rate-limit breach), or Sentinel abandonment. Negative test (false starvation
+  claim) correctly rejected.
+- **REDEEM** (transition 8, owner_secret required): one honest heartbeat while fallen,
+  redemption_progress += 1. Negative test (wrong owner_secret) correctly rejected.
+- **FOSSILIZE** (transition 10, permissionless): redemption window lapsed with progress below
+  threshold (5) -> MODE_FOSSIL, the true terminal state. Two negative tests (too early; already
+  earned enough redemption) both correctly rejected.
+
+Not yet proven: ASCEND (transition 9, FALLEN -> VAULT, requires 5 chained real redemption
+heartbeats — queued next). Nothing deployed to mainnet yet for this stage — local proof-of-mechanism
+only. Code: `covenants/scorpion_brain_stage11_fall_redemption/`.

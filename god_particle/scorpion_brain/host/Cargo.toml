@@ -27,6 +27,26 @@ path = "src/bin/route_moult.rs"
 name = "spawn_children"
 path = "src/bin/spawn_children.rs"
 
+[[bin]]
+name = "hatch"
+path = "src/bin/hatch.rs"
+
+[[bin]]
+name = "fall"
+path = "src/bin/fall.rs"
+
+[[bin]]
+name = "redeem"
+path = "src/bin/redeem.rs"
+
+[[bin]]
+name = "fossilize"
+path = "src/bin/fossilize.rs"
+
+[[bin]]
+name = "moult"
+path = "src/bin/moult.rs"
+
 [dependencies]
 methods = { path = "../methods" }
 risc0-zkvm = { version = "^3.0.5" }
@@ -35,3 +55,4 @@ serde = "1.0"
 hex = "0.4"
 serde_json = "1.0"
 sha2 = "0.10"
+rand = "0.8"

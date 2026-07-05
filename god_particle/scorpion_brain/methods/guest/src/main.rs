@@ -50,7 +50,7 @@ const W_STEPS: usize = 15; // max additional chain steps (w=16, so w-1=15)
 const N_CHAINS: usize = 51; // 48 message digit chains + 3 checksum chains
 
 const MAGIC: &[u8; 4] = b"GPDL";
-const DNA_LEN: usize = 721;
+const DNA_LEN: usize = 741;
 
 const MODE_STEM: u8 = 0;
 const MODE_VAULT: u8 = 1;
@@ -58,6 +58,18 @@ const MODE_SENTINEL: u8 = 2;
 const MODE_PRIVACY: u8 = 3;
 const MODE_GAME: u8 = 4;
 const MODE_ESCROW: u8 = 5;
+const MODE_FALLEN: u8 = 6;
+const MODE_FOSSIL: u8 = 7;
+
+// Chromosome 11 (Fall & Redemption) protocol constants -- not owner-tunable,
+// baked into the guest itself so redemption terms can never be gamed by
+// whoever happens to trigger the fall.
+const REDEMPTION_WINDOW_DAA: u64 = 100_000;
+const REDEMPTION_THRESHOLD: u8 = 5;
+const FALL_REASON_STARVATION: u8 = 1;
+const FALL_REASON_CANCER: u8 = 2;
+const FALL_REASON_ABANDONMENT: u8 = 3;
+
 
 struct Dna {
     covenant_id: [u8; 32],
@@ -111,6 +123,13 @@ struct Dna {
     rate_max_spend: u32,
     window_start_daa: u64,
     window_spend_count: u32,
+    // ── Chromosome 11 -- FALL & REDEMPTION (the afterlife) ──
+    fall_reason: u8,
+    fallen_at_daa: u64,
+    redemption_deadline: u64,
+    redemption_progress: u8,
+    redemption_threshold: u8,
+    fossilized: u8,
 }
 
 fn parse_dna(b: &[u8]) -> Dna {
@@ -196,6 +215,13 @@ fn parse_dna(b: &[u8]) -> Dna {
     let window_start_daa = u64::from_le_bytes(b[709..717].try_into().unwrap());
     let window_spend_count = u32::from_le_bytes(b[717..721].try_into().unwrap());
 
+    let fall_reason = b[721];
+    let fallen_at_daa = u64::from_le_bytes(b[722..730].try_into().unwrap());
+    let redemption_deadline = u64::from_le_bytes(b[730..738].try_into().unwrap());
+    let redemption_progress = b[738];
+    let redemption_threshold = b[739];
+    let fossilized = b[740];
+
     Dna {
         covenant_id,
         generation,
@@ -248,6 +274,12 @@ fn parse_dna(b: &[u8]) -> Dna {
         rate_max_spend,
         window_start_daa,
         window_spend_count,
+        fall_reason,
+        fallen_at_daa,
+        redemption_deadline,
+        redemption_progress,
+        redemption_threshold,
+        fossilized,
     }
 }
 
@@ -266,6 +298,13 @@ fn mode_transition_allowed(from: u8, to: u8) -> bool {
             | (MODE_GAME, MODE_GAME) // resolve the dance
             | (MODE_STEM, MODE_ESCROW) // extend the claws, enter escrow
             | (MODE_ESCROW, MODE_ESCROW) // resolve the dispute (arbiter or timeout)
+            // ── Chromosome 11: Fall & Redemption ──
+            | (MODE_STEM, MODE_FALLEN)     // betrayed by starvation, cancer, or abandonment
+            | (MODE_VAULT, MODE_FALLEN)
+            | (MODE_SENTINEL, MODE_FALLEN)
+            | (MODE_FALLEN, MODE_FALLEN)   // redemption heartbeat -- still on probation
+            | (MODE_FALLEN, MODE_VAULT)    // ASCENSION -- earned its way back to the light
+            | (MODE_FALLEN, MODE_FOSSIL)   // redemption window missed -- permanent death
     )
 }
 
@@ -506,10 +545,18 @@ fn main() {
     // losses from unbounded, unmonitored spending across this whole project.
     assert!(new_dna.compute_budget >= 1 && new_dna.compute_budget <= 3000,
         "compute_budget out of the safe metabolic range (RISC0 mass cap)");
-    assert!(new_dna.fee_reserve < old_dna.fee_reserve,
-        "fee_reserve must strictly decrease -- every heartbeat costs something");
-    assert!(new_dna.fee_reserve > 0,
-        "organism starved -- fee_reserve hit zero, the heart cannot beat again");
+    if transition == 9 {
+        // The ONE deliberate exception, in the whole organism, to "fee_reserve must strictly
+        // decrease": ascension out of the fallen state requires the owner to actually resupply
+        // it -- a real sacrifice, not a status flip. Redemption costs something too.
+        assert!(new_dna.fee_reserve > old_dna.fee_reserve,
+            "ascension requires the owner to resupply fee_reserve -- redemption is not free");
+    } else {
+        assert!(new_dna.fee_reserve < old_dna.fee_reserve,
+            "fee_reserve must strictly decrease -- every heartbeat costs something");
+        assert!(new_dna.fee_reserve > 0,
+            "organism starved -- fee_reserve hit zero, the heart cannot beat again");
+    }
 
     // Policy fields are only owner-tunable (transition 0) -- every other transition kind
     // must leave the organism's metabolic policy untouched.
@@ -903,6 +950,97 @@ fn main() {
             assert_eq!(h, old_dna.arbiter_commit, "arbiter_secret does not match the arbiter_commit on record");
             assert!(new_dna.winner == 0 || new_dna.winner == 1, "winner must be buyer(0) or seller(1)");
         }
+    } else if transition == 7 {
+        // ── Stage 11: THE FALL (Chromosome 11 -- "how they betrayed the light") ──
+        // Permissionless. No secret required, on purpose: nobody should need the owner's
+        // consent to prove that the organism is starving, cancerous, or abandoned -- that
+        // would let a dying owner hide the decay forever. Anyone may point at the public,
+        // checkable evidence and cast the organism down. Three sins, three reasons a
+        // scorpion falls from active life into the restricted afterlife:
+        assert!(old_dna.mode == MODE_STEM || old_dna.mode == MODE_VAULT || old_dna.mode == MODE_SENTINEL,
+            "only an active organism can fall");
+        assert_eq!(new_dna.mode, MODE_FALLEN, "the fall always lands in MODE_FALLEN");
+
+        let reason: u8 = env::read();
+        if reason == FALL_REASON_STARVATION {
+            // Sloth / neglect: it let its own fee reserve run dry.
+            assert!(old_dna.fee_reserve < old_dna.min_output,
+                "starvation claim false -- fee_reserve has not actually run dry");
+        } else if reason == FALL_REASON_CANCER {
+            // Greed / excess: it consumed faster than its own rate policy allowed.
+            assert!(old_dna.window_spend_count >= old_dna.rate_max_spend,
+                "cancer claim false -- spend rate has not actually exceeded policy");
+        } else if reason == FALL_REASON_ABANDONMENT {
+            // Abandonment: the owner simply stopped coming back.
+            assert_eq!(old_dna.mode, MODE_SENTINEL, "abandonment only applies to a Sentinel-armed organism");
+            assert!(current_daa > old_dna.deadline_daa + old_dna.grace_blocks as u64,
+                "abandonment claim false -- the check-in deadline plus grace period has not lapsed");
+        } else {
+            panic!("unknown fall reason -- must be starvation(1), cancer(2), or abandonment(3)");
+        }
+
+        assert_eq!(new_dna.fall_reason, reason, "new_dna must record the true reason for the fall");
+        assert_eq!(new_dna.fallen_at_daa, current_daa, "fallen_at_daa must be the moment of the fall, truthfully");
+        assert_eq!(new_dna.redemption_deadline, current_daa + REDEMPTION_WINDOW_DAA,
+            "redemption_deadline is a fixed protocol constant past fallen_at_daa -- cannot be negotiated");
+        assert_eq!(new_dna.redemption_progress, 0, "a freshly fallen organism has earned no redemption yet");
+        assert_eq!(new_dna.redemption_threshold, REDEMPTION_THRESHOLD, "redemption_threshold is a fixed protocol constant");
+        assert_eq!(new_dna.fossilized, 0, "falling is not yet death -- fossilized must stay 0");
+    } else if transition == 8 {
+        // ── Stage 11: REDEMPTION HEARTBEAT -- still on probation, still trying ──
+        // Unlike the fall itself, climbing back requires the owner to actually show up:
+        // proof of control over owner_secret, same mechanism Chromosome 1 always used.
+        assert_eq!(old_dna.mode, MODE_FALLEN, "redemption heartbeat only valid while fallen");
+        assert_eq!(new_dna.mode, MODE_FALLEN, "redemption heartbeat stays fallen -- ascension is a separate transition");
+        assert!(current_daa <= old_dna.redemption_deadline, "too late -- the redemption window has already closed");
+        assert_eq!(old_dna.fossilized, 0, "a fossilized organism cannot be redeemed -- it is already gone");
+
+        let owner_secret: Vec<u8> = env::read();
+        assert_eq!(owner_secret.len(), 32, "owner_secret must be 32 bytes");
+        let h = sha256(&owner_secret);
+        assert_eq!(h, old_dna.owner_commitment, "owner_secret does not match owner_commitment");
+
+        assert_eq!(new_dna.fall_reason, old_dna.fall_reason, "fall_reason must persist through a redemption heartbeat");
+        assert_eq!(new_dna.fallen_at_daa, old_dna.fallen_at_daa, "fallen_at_daa must persist");
+        assert_eq!(new_dna.redemption_deadline, old_dna.redemption_deadline, "redemption_deadline must persist -- no extending your own clock");
+        assert_eq!(new_dna.redemption_progress, old_dna.redemption_progress + 1, "each honest heartbeat advances redemption_progress by exactly 1");
+        assert_eq!(new_dna.redemption_threshold, old_dna.redemption_threshold, "redemption_threshold must persist");
+    } else if transition == 9 {
+        // ── Stage 11: ASCENSION -- earned its way back into the light ──
+        assert_eq!(old_dna.mode, MODE_FALLEN, "ascension only valid from fallen");
+        assert_eq!(new_dna.mode, MODE_VAULT, "ascension always lands back in VAULT");
+        assert!(old_dna.redemption_progress >= old_dna.redemption_threshold,
+            "has not yet earned redemption -- not enough honest heartbeats");
+        assert!(current_daa <= old_dna.redemption_deadline, "too late -- the redemption window has already closed");
+
+        let owner_secret: Vec<u8> = env::read();
+        assert_eq!(owner_secret.len(), 32, "owner_secret must be 32 bytes");
+        let h = sha256(&owner_secret);
+        assert_eq!(h, old_dna.owner_commitment, "owner_secret does not match owner_commitment");
+
+        // Rebirth is not free -- the owner must resupply the fee reserve, a real sacrifice
+        // to earn a clean slate, not just a status change.
+        assert!(new_dna.fee_reserve > old_dna.fee_reserve, "ascension requires the owner to resupply fee_reserve");
+        assert_eq!(new_dna.fall_reason, 0, "a clean slate erases the old fall reason");
+        assert_eq!(new_dna.fallen_at_daa, 0, "a clean slate erases when it fell");
+        assert_eq!(new_dna.redemption_deadline, 0, "a clean slate erases the old redemption deadline");
+        assert_eq!(new_dna.redemption_progress, 0, "a clean slate resets redemption_progress");
+        assert_eq!(new_dna.fossilized, 0, "an ascended organism is alive, not fossilized");
+    } else if transition == 10 {
+        // ── Stage 11: FOSSILIZATION -- the redemption window was squandered, this is final ──
+        // Permissionless, same ethos as the fall itself: nobody needs permission to record
+        // that a chance was missed. The chitin remains; fossilized, forever, unchangeable.
+        assert_eq!(old_dna.mode, MODE_FALLEN, "only a fallen organism can fossilize");
+        assert_eq!(new_dna.mode, MODE_FOSSIL, "fossilization always lands in MODE_FOSSIL");
+        assert!(current_daa > old_dna.redemption_deadline, "cannot fossilize before the redemption window has actually closed");
+        assert!(old_dna.redemption_progress < old_dna.redemption_threshold,
+            "cannot fossilize an organism that already earned enough redemption -- it should ascend, not die");
+
+        assert_eq!(new_dna.fall_reason, old_dna.fall_reason, "fall_reason is preserved in the grave record");
+        assert_eq!(new_dna.fallen_at_daa, old_dna.fallen_at_daa, "fallen_at_daa is preserved in the grave record");
+        assert_eq!(new_dna.redemption_deadline, old_dna.redemption_deadline, "redemption_deadline is preserved in the grave record");
+        assert_eq!(new_dna.redemption_progress, old_dna.redemption_progress, "redemption_progress is preserved in the grave record");
+        assert_eq!(new_dna.fossilized, 1, "fossilization must set fossilized=1 -- this is the permanent marker");
     } else {
         panic!("unknown transition kind");
     }
