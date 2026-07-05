@@ -23,6 +23,10 @@ path = "src/bin/resolve_game.rs"
 name = "route_moult"
 path = "src/bin/route_moult.rs"
 
+[[bin]]
+name = "spawn_children"
+path = "src/bin/spawn_children.rs"
+
 [dependencies]
 methods = { path = "../methods" }
 risc0-zkvm = { version = "^3.0.5" }

@@ -50,7 +50,7 @@ const W_STEPS: usize = 15; // max additional chain steps (w=16, so w-1=15)
 const N_CHAINS: usize = 51; // 48 message digit chains + 3 checksum chains
 
 const MAGIC: &[u8; 4] = b"GPDL";
-const DNA_LEN: usize = 458;
+const DNA_LEN: usize = 493;
 
 const MODE_STEM: u8 = 0;
 const MODE_VAULT: u8 = 1;
@@ -88,6 +88,10 @@ struct Dna {
     peer_count: u8,
     peer_id_0: [u8; 32],
     peer_id_1: [u8; 32],
+    max_children: u8,
+    child_template: [u8; 32],
+    max_generations: u8,
+    children_born: u8,
 }
 
 fn parse_dna(b: &[u8]) -> Dna {
@@ -141,6 +145,12 @@ fn parse_dna(b: &[u8]) -> Dna {
     let mut peer_id_1 = [0u8; 32];
     peer_id_1.copy_from_slice(&b[426..458]);
 
+    let max_children = b[458];
+    let mut child_template = [0u8; 32];
+    child_template.copy_from_slice(&b[459..491]);
+    let max_generations = b[491];
+    let children_born = b[492];
+
     Dna {
         covenant_id,
         generation,
@@ -171,6 +181,10 @@ fn parse_dna(b: &[u8]) -> Dna {
         peer_count,
         peer_id_0,
         peer_id_1,
+        max_children,
+        child_template,
+        max_generations,
+        children_born,
     }
 }
 
@@ -371,7 +385,7 @@ fn walk_merkle(
 fn main() {
     let old_dna_bytes: Vec<u8> = env::read();
     let new_dna_bytes: Vec<u8> = env::read();
-    let transition: u8 = env::read(); // 0=owner-sig, 1=XMSS check-in, 2=privacy withdrawal, 3=game resolve, 4=nervous-system route-validated moult
+    let transition: u8 = env::read(); // 0=owner-sig, 1=XMSS check-in, 2=privacy withdrawal, 3=game resolve, 4=route moult, 5=reproduction (spawn children)
 
     let old_dna = parse_dna(&old_dna_bytes);
     let new_dna = parse_dna(&new_dna_bytes);
@@ -659,6 +673,56 @@ fn main() {
         }
 
         assert_eq!(node, old_dna.route_root, "route not found in route_root -- this moult is not wired into the nervous system");
+    } else if transition == 5 {
+        // ── Stage 6 real logic: reproduction (Chromosome 6, gonads) ──
+        // Parthenogenesis: the owner alone authorizes a spawn. The parent covenant
+        // continues living (children_born increments) while N fresh child covenants
+        // are born in the SAME proof -- true fanout, not a separate transaction per
+        // child. Each child gets its own chitin (covenant_id), deterministically
+        // derived from the parent's lineage, so parentage is always verifiable.
+        let owner_secret: Vec<u8> = env::read();
+        assert_eq!(owner_secret.len(), 32, "owner_secret must be 32 bytes");
+        let h = sha256(&owner_secret);
+        assert_eq!(h, old_dna.owner_commitment, "owner_secret does not match commitment");
+        assert_eq!(old_dna.owner_commitment, new_dna.owner_commitment, "owner_commitment must persist");
+
+        assert_eq!(old_dna.max_children, new_dna.max_children, "max_children unchanged by spawning");
+        assert_eq!(old_dna.child_template, new_dna.child_template, "child_template is set at birth, immutable");
+        assert_eq!(old_dna.max_generations, new_dna.max_generations, "parent's own reproductive depth is unchanged by spawning its own children");
+
+        assert!(old_dna.max_generations > 0, "sterile: max_generations exhausted, this organism cannot reproduce");
+
+        let children: Vec<Vec<u8>> = env::read();
+        let num_children = children.len() as u8;
+        assert!(num_children > 0, "a reproduction transition must spawn at least one child");
+        assert_eq!(
+            new_dna.children_born,
+            old_dna.children_born + num_children,
+            "children_born must increase by exactly the number of children spawned"
+        );
+        assert!(
+            new_dna.children_born as u16 <= old_dna.max_children as u16,
+            "cannot exceed max_children (litter size limit)"
+        );
+
+        for (i, child_bytes) in children.iter().enumerate() {
+            let child = parse_dna(child_bytes);
+            let idx = old_dna.children_born + i as u8;
+            let mut buf = Vec::with_capacity(33);
+            buf.extend_from_slice(&old_dna.covenant_id);
+            buf.push(idx);
+            let expected_child_id = sha256(&buf);
+            assert_eq!(child.covenant_id, expected_child_id, "child covenant_id must be deterministically derived from the parent's lineage");
+            assert_eq!(child.generation, 0, "a newborn child starts at generation 0");
+            assert_eq!(child.mode, MODE_STEM, "a newborn child is born resting, in STEM mode");
+            assert_eq!(
+                child.max_generations,
+                old_dna.max_generations - 1,
+                "child's reproductive depth must be exactly the parent's minus 1 (telomere shortening prevents runaway reproduction)"
+            );
+            assert_eq!(child.owner_commitment, old_dna.owner_commitment, "child inherits the same owner (asexual/parthenogenesis)");
+            assert_eq!(child.children_born, 0, "a newborn child has not yet reproduced");
+        }
     } else {
         panic!("unknown transition kind");
     }

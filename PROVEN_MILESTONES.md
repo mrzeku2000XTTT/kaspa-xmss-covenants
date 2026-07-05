@@ -214,3 +214,26 @@ Format: `TX <txid>` = mainnet transaction, confirmed `is_accepted:true` on api.k
   XMSS check-in, privacy withdrawal, game resolve, and now route-validated moult —
   selected by a transition byte in one evolving RISC0 guest ELF. Not yet deployed to
   mainnet.
+
+## 7e. God Particle — Stage 6 "Reproduction" (the gonads, parthenogenesis fanout, natively inside the STARK)
+- Extended the SAME guest ELF a sixth time (transition=5): the parent covenant spawns
+  N fresh child covenants in ONE proof (true fanout, not one tx per child). Each
+  child gets its own chitin (`covenant_id = sha256(parent_covenant_id || index)`,
+  deterministically derived and verified in-circuit), is born at generation 0 in
+  STEM (resting) mode, inherits the parent's owner_commitment (asexual/
+  parthenogenesis), and has `max_generations` reduced by exactly 1 from the parent's
+  (telomere shortening -- prevents runaway/cancerous reproduction; once
+  max_generations hits 0 a lineage is sterile). DNA grew to 493 bytes (Chromosome 6:
+  max_children, child_template, max_generations, children_born).
+- **PROOF VERIFIED LOCALLY, first attempt.** Test: parent (gen 5, 3 generations of
+  fertility left, litter cap 2) spawns 2 children, parent's children_born goes 0->2,
+  each child correctly derived/verified.
+- **Negative test:** deliberately set a child's max_generations to the parent's value
+  instead of parent-1 (skipping the telomere decrement) and reran -- guest correctly
+  panicked ("child's reproductive depth must be exactly the parent's minus 1"),
+  confirming the check isn't vacuous. Restored the correct file after.
+- Code: `god_particle/scorpion_brain/host/src/bin/spawn_children.rs`.
+- **Six brains, one organism**, all local-proof-only so far: stem<->vault/owner-secret,
+  XMSS check-in, privacy withdrawal, game resolve, route-validated moult, and now
+  reproduction/fanout -- selected by a transition byte in one evolving RISC0 guest ELF.
+  Not yet deployed to mainnet.

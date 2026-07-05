@@ -72,7 +72,13 @@ fn build_sentinel_dna(
     d.push(0); // peer_count
     d.extend_from_slice(&[0u8; 32]); // peer_id_0
     d.extend_from_slice(&[0u8; 32]); // peer_id_1
-    assert_eq!(d.len(), 458);
+    
+    // Chromosome 6 (reproduction) — zeroed/sterile by default, unused outside spawn transitions.
+    d.push(0); // max_children
+    d.extend_from_slice(&[0u8; 32]); // child_template
+    d.push(0); // max_generations
+    d.push(0); // children_born
+    assert_eq!(d.len(), 493);
     d
 }
 
