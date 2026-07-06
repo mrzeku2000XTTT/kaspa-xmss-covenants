@@ -333,6 +333,8 @@ fn mode_transition_allowed(from: u8, to: u8) -> bool {
             | (MODE_HUNT, MODE_VAULT)      // resolve the hunt, outcome applied
             // ── Chromosome 13: Dust ──
             | (MODE_FOSSIL, MODE_DUST)     // the fossil erodes -- what's left is too small to ever spend
+            // ── Chromosome 14: Phoenix / Flame -- the ONE exception to "no transition out of DUST" ──
+            | (MODE_DUST, MODE_STEM)       // true rebirth: same chitin, same owner, crossing back from absolute zero
     )
 }
 
@@ -594,6 +596,12 @@ fn main() {
         // verified inside the transition==13 branch below.
         assert!(new_dna.fee_reserve < old_dna.fee_reserve,
             "crumbling must still reduce fee_reserve -- dust settles, it doesn't grow");
+    } else if transition == 14 {
+        // The FOURTH and final deliberate exception: igniting from absolute zero. Old
+        // fee_reserve is always exactly 0 here (that's what MODE_DUST means) -- rebirth
+        // requires the owner to fund it fresh, a real sacrifice, same ethos as ASCEND.
+        assert!(new_dna.fee_reserve > old_dna.fee_reserve,
+            "phoenix rebirth requires the owner to resupply fee_reserve from absolute zero -- resurrection is not free");
     } else {
         assert!(new_dna.fee_reserve < old_dna.fee_reserve,
             "fee_reserve must strictly decrease -- every heartbeat costs something");
@@ -1178,6 +1186,56 @@ fn main() {
         assert_eq!(new_dna.redemption_deadline, old_dna.redemption_deadline, "redemption_deadline is preserved even in dust");
         assert_eq!(new_dna.redemption_progress, old_dna.redemption_progress, "redemption_progress is preserved even in dust");
         assert_eq!(new_dna.fossilized, 1, "fossilized marker persists -- dust remembers what it was");
+    } else if transition == 14 {
+        // ── Stage 14: IGNITE -- the phoenix, the flame that rises from its own ash ──
+        // Not a new organism -- THE SAME organism. Same covenant_id (chitin), same
+        // owner_commitment, same eternal creation_daa/creation_txid (Chromosome 7's global
+        // memory rule already enforces all of this without any extra code here). Only the
+        // owner who held the original secret through the entire fall -> fossil -> dust arc
+        // can strike the flame. Every mode-specific chromosome resets to a fresh-birth
+        // state; the organism gets a second life, but it never gets to pretend it wasn't
+        // once dust -- prev_state_hash (checked globally, Phase 1b) permanently links this
+        // rebirth to the exact ashes it rose from.
+        assert_eq!(old_dna.mode, MODE_DUST, "only true dust can ignite -- the phoenix rises from ash, not from the living");
+        assert_eq!(new_dna.mode, MODE_STEM, "ignition always returns to stem -- a fresh start, same chitin");
+
+        let owner_secret: Vec<u8> = env::read();
+        assert_eq!(owner_secret.len(), 32, "owner_secret must be 32 bytes");
+        let h = sha256(&owner_secret);
+        assert_eq!(h, old_dna.owner_commitment, "owner_secret does not match owner_commitment -- only the original owner can ignite their own ashes");
+        assert_eq!(new_dna.owner_commitment, old_dna.owner_commitment, "owner_commitment persists through the flame -- same owner, reborn");
+
+        // Every mode-specific chromosome resets to a fresh-birth default. Death is real;
+        // rebirth does not smuggle old state through the flame.
+        assert_eq!(new_dna.xmss_root, [0u8; 32], "xmss_root resets on rebirth");
+        assert_eq!(new_dna.xmss_next_leaf, 0, "xmss_next_leaf resets on rebirth");
+        assert_eq!(new_dna.deadline_daa, 0, "deadline_daa resets on rebirth");
+        assert_eq!(new_dna.checkin_interval, 0, "checkin_interval resets on rebirth");
+        assert_eq!(new_dna.is_terminal, 0, "is_terminal resets on rebirth");
+        assert_eq!(new_dna.beneficiary_commit, [0u8; 32], "beneficiary_commit resets on rebirth");
+        assert_eq!(new_dna.heartbeat_count, 0, "heartbeat_count resets on rebirth");
+        assert_eq!(new_dna.merkle_root, [0u8; 32], "merkle_root resets on rebirth");
+        assert_eq!(new_dna.nullifier_count, 0, "nullifier_count resets on rebirth");
+        assert_eq!(new_dna.tree_depth, 0, "tree_depth resets on rebirth");
+        assert_eq!(new_dna.player_a_commit, [0u8; 32], "player_a_commit resets on rebirth");
+        assert_eq!(new_dna.player_b_commit, [0u8; 32], "player_b_commit resets on rebirth");
+        assert_eq!(new_dna.pot_amount, 0, "pot_amount resets on rebirth");
+        assert_eq!(new_dna.game_state, 0, "game_state resets on rebirth");
+        assert_eq!(new_dna.children_born, 0, "children_born resets on rebirth -- a fresh reproductive life");
+        assert_eq!(new_dna.arbiter_commit, [0u8; 32], "arbiter_commit resets on rebirth");
+        assert_eq!(new_dna.buyer_commit, [0u8; 32], "buyer_commit resets on rebirth");
+        assert_eq!(new_dna.seller_commit, [0u8; 32], "seller_commit resets on rebirth");
+        assert_eq!(new_dna.dispute_state, 0, "dispute_state resets on rebirth");
+        assert_eq!(new_dna.fall_reason, 0, "fall_reason is erased -- the flame is a genuinely clean slate");
+        assert_eq!(new_dna.fallen_at_daa, 0, "fallen_at_daa is erased on rebirth");
+        assert_eq!(new_dna.redemption_deadline, 0, "redemption_deadline is erased on rebirth");
+        assert_eq!(new_dna.redemption_progress, 0, "redemption_progress is erased on rebirth");
+        assert_eq!(new_dna.fossilized, 0, "an ignited organism is alive, not fossilized");
+        assert_eq!(new_dna.hunt_wager, 0, "hunt_wager resets on rebirth");
+        assert_eq!(new_dna.hunt_state, 0, "hunt_state resets on rebirth");
+        assert_eq!(new_dna.hunter_move_commit, [0u8; 32], "hunter_move_commit resets on rebirth");
+        assert_eq!(new_dna.prey_move_commit, [0u8; 32], "prey_move_commit resets on rebirth");
+        assert_eq!(new_dna.dusted_at_daa, 0, "dusted_at_daa is erased -- it is no longer dust, it is fire");
     } else {
         panic!("unknown transition kind");
     }

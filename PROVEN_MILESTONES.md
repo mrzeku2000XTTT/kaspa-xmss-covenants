@@ -393,3 +393,24 @@ Both proofs verified locally, real RISC0/STARK, first try:
 STEM/VAULT -> (SENTINEL/PRIVACY/GAME/ESCROW/HUNT side-modes) -> FALLEN -> (REDEEM -> ASCEND, back to
 life) or (FOSSIL -> DUST, the true end). Code: `covenants/scorpion_brain_stage13_dust/`. Nothing
 deployed to mainnet yet -- local proof-of-mechanism only.
+
+## 2026-07-06 (cont. 2) — Stage 14: FLAME / PHOENIX (Chromosome 14), local proof — the cycle closes
+
+The one deliberate exception to Chromosome 13's "no transition out of MODE_DUST." New transition
+IGNITE (14): DUST -> STEM, SAME covenant_id (chitin), same owner_commitment, same eternal
+creation_daa/creation_txid (Chromosome 7's global memory-chain rule already enforces continuity
+without any new code) -- but the owner must resupply fee_reserve from exactly 0 (4th and final
+metabolism exception, alongside ASCEND/HUNT-resolve/CRUMBLE), and every mode-specific
+chromosome (XMSS, privacy, game, escrow, hunt, the entire fall/redemption/dust record) resets to
+a fresh-birth default. No new DNA bytes needed -- stays 854 bytes.
+
+Both proofs verified locally, real RISC0/STARK:
+- Negative test: ignite attempt with the wrong owner_secret -- correctly rejected.
+- Real IGNITE: DUST (gen 20, fee_reserve=0) -> STEM (gen 21, fee_reserve resupplied to 60M),
+  same covenant_id/owner_commitment/creation_daa/creation_txid, all mode-specific state reset.
+
+**14 chromosomes now proven in the evolving scorpion_brain guest ELF.** The lifecycle is no
+longer a one-way arc ending at DUST -- it is a real cycle: STEM/VAULT -> ... -> FALLEN -> FOSSIL
+-> DUST -> IGNITE -> STEM again, as long as the same owner still holds the secret. Code:
+`covenants/scorpion_brain_stage14_phoenix/`. Nothing deployed to mainnet yet -- local
+proof-of-mechanism only.
