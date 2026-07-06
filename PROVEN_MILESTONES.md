@@ -436,3 +436,26 @@ witness byte the generic proof-runner didn't originally support.
 Code: `covenants/scorpion_brain_stage15_full_cycle/`. Local-proof-only -- Stage 10's single mainnet
 hatch (entry above, genesis+1 heartbeat) remains the only piece of this organism live on Kaspa mainnet.
 This stage is the reference implementation for a future full mainnet hop-chain deployment.
+
+## 2026-07-06 (cont. 4) — Stage 16: "On The Third Day" — minimum tomb-time invariant added to IGNITE, local
+
+New global invariant on the existing IGNITE transition (14): `current_daa >= old_dna.dusted_at_daa +
+THREE_DAYS_DAA` (259_200 DAA, this project's 86_400-DAA/day convention). No new DNA bytes -- reuses
+Stage 13's `dusted_at_daa`. This is a MINIMUM (unlike Chr11's redemption_deadline which expires), the
+mirror-image invariant: the tomb never expires, you simply cannot rise before it's held its full three
+days, no matter who holds the owner_secret.
+
+Two real local proofs: (1) NEGATIVE -- ignite one DAA short of three days, correctly REJECTED with the
+guest panic message; (2) POSITIVE -- ignite at exactly three days (the `>=` boundary), VERIFIED,
+independently re-checked with the from-scratch verifier (`risc0gate/verifier`), image_id confirmed to
+match a fresh guest rebuild (not stale cache).
+
+Real bug hit+fixed: first negative-test run silently passed because risc0's guest build cache was stale
+(ELF hours older than the source edit) -- `cargo build` only recompiled the host crate. Fixed by forcing
+`rm -rf target/riscv-guest` + clearing the methods fingerprint, confirmed via image_id diff before
+re-running. Lesson: always confirm image_id changed after a guest edit before trusting proof results.
+
+Regression-checked: Stage 14's original test and Stage 15's full 7-proof lifecycle chain both had their
+hardcoded IGNITE DAA gaps bumped from 50,000 to 259,200+ and re-run successfully end-to-end.
+
+Code: `covenants/scorpion_brain_stage16_harrowing/`. Local-proof-only.
