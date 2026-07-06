@@ -355,3 +355,21 @@ REDEEM, ASCEND, FOSSILIZE.** The organism can genuinely fail, get a real second 
 by a protocol-fixed window, earn its way back with honest resupply, or truly die forever with
 no further transitions. Code + updated README: `covenants/scorpion_brain_stage11_fall_redemption/`.
 Nothing deployed to mainnet yet for this stage -- local proof-of-mechanism only.
+
+## 2026-07-06 — Stage 12: HUNT MODE (Chromosome 12) — local proof, both duels + rejection
+
+Predator/prey combat chromosome: reuses Chr4's proven sealed-commit-reveal mechanic (HUNT/FLEE
+instead of STAG/HARE) but the stake is `fee_reserve` itself, not an external pot. DNA grows
+741 -> 846 bytes. Two transitions: INITIATE_HUNT (11, VAULT->HUNT, owner_secret, wager staked
+from fee_reserve) and RESOLVE_HUNT (12, HUNT->VAULT, outcome table mutates fee_reserve -- the
+SECOND deliberate exception to the global strict-decrease rule, alongside ASCEND).
+
+Real RISC0/STARK proofs, all `receipt.verify()` passed:
+- Duel 1 (clean kill): INITIATE (100M->80M) -> forged-move resolve attempt correctly rejected
+  -> real RESOLVE HUNT/FLEE (80M->120M).
+- Duel 2 (ambushed): INITIATE (80M->60M) -> real RESOLVE FLEE/HUNT (60M->60M, wager forfeited).
+
+A hunt loss draining fee_reserve below min_output makes the organism eligible for the ALREADY-
+proven permissionless FALL transition (Chromosome 11) on its next heartbeat -- no new fall logic
+needed, pure composition of existing chromosomes. Code: `covenants/scorpion_brain_stage12_hunt_mode/`.
+Nothing deployed to mainnet yet -- local proof-of-mechanism only.

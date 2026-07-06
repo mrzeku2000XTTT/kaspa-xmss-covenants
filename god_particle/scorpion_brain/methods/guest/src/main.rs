@@ -50,7 +50,7 @@ const W_STEPS: usize = 15; // max additional chain steps (w=16, so w-1=15)
 const N_CHAINS: usize = 51; // 48 message digit chains + 3 checksum chains
 
 const MAGIC: &[u8; 4] = b"GPDL";
-const DNA_LEN: usize = 741;
+const DNA_LEN: usize = 846;
 
 const MODE_STEM: u8 = 0;
 const MODE_VAULT: u8 = 1;
@@ -60,6 +60,7 @@ const MODE_GAME: u8 = 4;
 const MODE_ESCROW: u8 = 5;
 const MODE_FALLEN: u8 = 6;
 const MODE_FOSSIL: u8 = 7;
+const MODE_HUNT: u8 = 8;
 
 // Chromosome 11 (Fall & Redemption) protocol constants -- not owner-tunable,
 // baked into the guest itself so redemption terms can never be gamed by
@@ -130,6 +131,12 @@ struct Dna {
     redemption_progress: u8,
     redemption_threshold: u8,
     fossilized: u8,
+    // ── Chromosome 12 -- HUNT MODE (predator/prey duel, the stake is survival itself) ──
+    hunt_target_id: [u8; 32],
+    hunt_wager: u64,
+    hunter_move_commit: [u8; 32],
+    prey_move_commit: [u8; 32],
+    hunt_state: u8,
 }
 
 fn parse_dna(b: &[u8]) -> Dna {
@@ -222,6 +229,12 @@ fn parse_dna(b: &[u8]) -> Dna {
     let redemption_threshold = b[739];
     let fossilized = b[740];
 
+    let hunt_target_id: [u8; 32] = b[741..773].try_into().unwrap();
+    let hunt_wager = u64::from_le_bytes(b[773..781].try_into().unwrap());
+    let hunter_move_commit: [u8; 32] = b[781..813].try_into().unwrap();
+    let prey_move_commit: [u8; 32] = b[813..845].try_into().unwrap();
+    let hunt_state = b[845];
+
     Dna {
         covenant_id,
         generation,
@@ -280,6 +293,11 @@ fn parse_dna(b: &[u8]) -> Dna {
         redemption_progress,
         redemption_threshold,
         fossilized,
+        hunt_target_id,
+        hunt_wager,
+        hunter_move_commit,
+        prey_move_commit,
+        hunt_state,
     }
 }
 
@@ -305,6 +323,9 @@ fn mode_transition_allowed(from: u8, to: u8) -> bool {
             | (MODE_FALLEN, MODE_FALLEN)   // redemption heartbeat -- still on probation
             | (MODE_FALLEN, MODE_VAULT)    // ASCENSION -- earned its way back to the light
             | (MODE_FALLEN, MODE_FOSSIL)   // redemption window missed -- permanent death
+            // ── Chromosome 12: Hunt Mode ──
+            | (MODE_VAULT, MODE_HUNT)      // initiate a hunt, wager staked from fee_reserve
+            | (MODE_HUNT, MODE_VAULT)      // resolve the hunt, outcome applied
     )
 }
 
@@ -551,6 +572,13 @@ fn main() {
         // it -- a real sacrifice, not a status flip. Redemption costs something too.
         assert!(new_dna.fee_reserve > old_dna.fee_reserve,
             "ascension requires the owner to resupply fee_reserve -- redemption is not free");
+    } else if transition == 12 {
+        // The SECOND deliberate exception: resolving a hunt can go either way -- the stake
+        // was already deducted at initiation (transition 11, under the normal strict-decrease
+        // rule), so resolution can legitimately return more than was there before if the hunt
+        // was won. The exact delta is verified inside the resolve_hunt branch itself, against
+        // the choreography table -- not here.
+        // no check here -- exact delta verified inside the transition==12 branch below.
     } else {
         assert!(new_dna.fee_reserve < old_dna.fee_reserve,
             "fee_reserve must strictly decrease -- every heartbeat costs something");
@@ -1041,6 +1069,78 @@ fn main() {
         assert_eq!(new_dna.redemption_deadline, old_dna.redemption_deadline, "redemption_deadline is preserved in the grave record");
         assert_eq!(new_dna.redemption_progress, old_dna.redemption_progress, "redemption_progress is preserved in the grave record");
         assert_eq!(new_dna.fossilized, 1, "fossilization must set fossilized=1 -- this is the permanent marker");
+    } else if transition == 11 {
+        // ── Stage 12: INITIATE HUNT -- the stinger extends, the wager is real ──
+        // Owner-authorized (proving control is still required to enter combat -- an
+        // organism cannot be forced into a hunt against its will). The wager is staked
+        // directly from fee_reserve under the normal strict-decrease metabolism rule --
+        // entering a hunt already costs something, win or lose.
+        assert_eq!(old_dna.mode, MODE_VAULT, "a hunt can only be initiated from vault mode");
+        assert_eq!(new_dna.mode, MODE_HUNT, "initiating a hunt always lands in hunt mode");
+        assert_eq!(old_dna.hunt_state, 0, "cannot initiate a hunt while already mid-hunt");
+        assert_eq!(new_dna.hunt_state, 1, "initiating a hunt must set hunt_state=1");
+
+        let owner_secret: Vec<u8> = env::read();
+        assert_eq!(owner_secret.len(), 32, "owner_secret must be 32 bytes");
+        let h = sha256(&owner_secret);
+        assert_eq!(h, old_dna.owner_commitment, "owner_secret does not match owner_commitment");
+
+        assert!(new_dna.hunt_wager > 0, "a hunt with no stake is not a hunt");
+        assert_eq!(new_dna.fee_reserve, old_dna.fee_reserve - new_dna.hunt_wager,
+            "the wager must be staked out of fee_reserve exactly");
+    } else if transition == 12 {
+        // ── Stage 12: RESOLVE HUNT -- both sealed moves revealed, the stinger strikes or misses ──
+        // Same sealed-commit-reveal mechanic proven in Chromosome 4 (Stag Hunt), but the
+        // stakes are fee_reserve itself -- the organism's own survival -- not an external
+        // pot. A bad enough loss can starve the organism below min_output, making it eligible
+        // for the ALREADY-proven permissionless FALL transition (Chromosome 11) on its very
+        // next heartbeat. Hunt Mode doesn't need its own fall logic -- it just feeds the one
+        // that already exists.
+        assert_eq!(old_dna.mode, MODE_HUNT, "resolve only valid from hunt mode");
+        assert_eq!(new_dna.mode, MODE_VAULT, "resolving a hunt always returns to vault mode");
+        assert_eq!(old_dna.hunt_state, 1, "hunt must be active to resolve");
+        assert_eq!(new_dna.hunt_state, 0, "resolving a hunt must clear hunt_state back to 0");
+
+        let hunter_move: u8 = env::read();
+        let hunter_nonce: Vec<u8> = env::read();
+        let prey_move: u8 = env::read();
+        let prey_nonce: Vec<u8> = env::read();
+
+        assert!(hunter_move == 1 || hunter_move == 2, "hunter_move must be 1=HUNT or 2=FLEE");
+        assert!(prey_move == 1 || prey_move == 2, "prey_move must be 1=HUNT or 2=FLEE");
+        assert_eq!(hunter_nonce.len(), 32, "hunter_nonce must be 32 bytes");
+        assert_eq!(prey_nonce.len(), 32, "prey_nonce must be 32 bytes");
+
+        let mut hbuf = Vec::with_capacity(33);
+        hbuf.push(hunter_move);
+        hbuf.extend_from_slice(&hunter_nonce);
+        assert_eq!(sha256(&hbuf), old_dna.hunter_move_commit, "hunter_move does not match hunter_move_commit");
+
+        let mut pbuf = Vec::with_capacity(33);
+        pbuf.push(prey_move);
+        pbuf.extend_from_slice(&prey_nonce);
+        assert_eq!(sha256(&pbuf), old_dna.prey_move_commit, "prey_move does not match prey_move_commit");
+
+        // Choreography: the stake is survival, not points.
+        //   HUNT/HUNT (mutual clash): both risked it -- hunter recovers half the wager
+        //   HUNT/FLEE (clean kill): hunter recovers the wager PLUS an equal bonus
+        //   FLEE/HUNT (ambushed): hunter recovers nothing -- the wager is gone
+        //   FLEE/FLEE (mutual avoidance): no harm done -- full wager refunded
+        let wager = old_dna.hunt_wager;
+        let expected_fee_reserve = match (hunter_move, prey_move) {
+            (1, 1) => old_dna.fee_reserve + wager / 2,
+            (1, 2) => old_dna.fee_reserve + wager * 2,
+            (2, 1) => old_dna.fee_reserve,
+            (2, 2) => old_dna.fee_reserve + wager,
+            _ => unreachable!(),
+        };
+        assert_eq!(new_dna.fee_reserve, expected_fee_reserve, "fee_reserve outcome mismatch vs hunt choreography");
+
+        // Clean slate -- Chromosome 12 fields reset for the next hunt.
+        assert_eq!(new_dna.hunt_wager, 0, "hunt_wager must reset to 0 after resolution");
+        assert_eq!(new_dna.hunt_target_id, [0u8; 32], "hunt_target_id must reset to 0 after resolution");
+        assert_eq!(new_dna.hunter_move_commit, [0u8; 32], "hunter_move_commit must reset to 0 after resolution");
+        assert_eq!(new_dna.prey_move_commit, [0u8; 32], "prey_move_commit must reset to 0 after resolution");
     } else {
         panic!("unknown transition kind");
     }
