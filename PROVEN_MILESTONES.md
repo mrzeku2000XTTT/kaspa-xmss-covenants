@@ -373,3 +373,23 @@ A hunt loss draining fee_reserve below min_output makes the organism eligible fo
 proven permissionless FALL transition (Chromosome 11) on its next heartbeat -- no new fall logic
 needed, pure composition of existing chromosomes. Code: `covenants/scorpion_brain_stage12_hunt_mode/`.
 Nothing deployed to mainnet yet -- local proof-of-mechanism only.
+
+## 2026-07-06 (cont.) — Stage 13: DUST (Chromosome 13) — the final chromosome, local proof
+
+The last chromosome. Once a FOSSIL organism's own `fee_reserve` is genuinely below its `min_output`
+policy floor (a true, un-spendable KIP-9-style dust amount, per entries 522/593), anyone can
+permissionlessly CRUMBLE it (transition 13) to `MODE_DUST`, writing `fee_reserve` to exactly 0.
+No transition exists out of `MODE_DUST` -- it is the absolute terminal state. This is the third and
+final deliberate exception to the global "fee_reserve must strictly decrease, never hit zero" rule
+(after ASCEND resupply and HUNT resolution). DNA grows 846 -> 854 bytes (`dusted_at_daa: u64`).
+
+Both proofs verified locally, real RISC0/STARK, first try:
+- Negative test: crumble attempt with fee_reserve still above min_output -- correctly rejected.
+- Real CRUMBLE: fee_reserve 3M (< min_output 20M) -> DUST, fee_reserve=0, dusted_at_daa recorded.
+  Grave record (fall_reason/fallen_at_daa/redemption_deadline/redemption_progress/fossilized) all
+  preserved into the final resting state.
+
+**13 chromosomes now proven in the evolving scorpion_brain guest ELF.** Full lifecycle arc closed:
+STEM/VAULT -> (SENTINEL/PRIVACY/GAME/ESCROW/HUNT side-modes) -> FALLEN -> (REDEEM -> ASCEND, back to
+life) or (FOSSIL -> DUST, the true end). Code: `covenants/scorpion_brain_stage13_dust/`. Nothing
+deployed to mainnet yet -- local proof-of-mechanism only.

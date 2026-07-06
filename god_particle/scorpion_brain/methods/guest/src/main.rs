@@ -50,7 +50,7 @@ const W_STEPS: usize = 15; // max additional chain steps (w=16, so w-1=15)
 const N_CHAINS: usize = 51; // 48 message digit chains + 3 checksum chains
 
 const MAGIC: &[u8; 4] = b"GPDL";
-const DNA_LEN: usize = 846;
+const DNA_LEN: usize = 854;
 
 const MODE_STEM: u8 = 0;
 const MODE_VAULT: u8 = 1;
@@ -61,6 +61,7 @@ const MODE_ESCROW: u8 = 5;
 const MODE_FALLEN: u8 = 6;
 const MODE_FOSSIL: u8 = 7;
 const MODE_HUNT: u8 = 8;
+const MODE_DUST: u8 = 9;
 
 // Chromosome 11 (Fall & Redemption) protocol constants -- not owner-tunable,
 // baked into the guest itself so redemption terms can never be gamed by
@@ -137,6 +138,8 @@ struct Dna {
     hunter_move_commit: [u8; 32],
     prey_move_commit: [u8; 32],
     hunt_state: u8,
+    // ── Chromosome 13 -- DUST (ashes to ashes, the true end) ──
+    dusted_at_daa: u64,
 }
 
 fn parse_dna(b: &[u8]) -> Dna {
@@ -234,6 +237,7 @@ fn parse_dna(b: &[u8]) -> Dna {
     let hunter_move_commit: [u8; 32] = b[781..813].try_into().unwrap();
     let prey_move_commit: [u8; 32] = b[813..845].try_into().unwrap();
     let hunt_state = b[845];
+    let dusted_at_daa = u64::from_le_bytes(b[846..854].try_into().unwrap());
 
     Dna {
         covenant_id,
@@ -298,6 +302,7 @@ fn parse_dna(b: &[u8]) -> Dna {
         hunter_move_commit,
         prey_move_commit,
         hunt_state,
+        dusted_at_daa,
     }
 }
 
@@ -326,6 +331,8 @@ fn mode_transition_allowed(from: u8, to: u8) -> bool {
             // ── Chromosome 12: Hunt Mode ──
             | (MODE_VAULT, MODE_HUNT)      // initiate a hunt, wager staked from fee_reserve
             | (MODE_HUNT, MODE_VAULT)      // resolve the hunt, outcome applied
+            // ── Chromosome 13: Dust ──
+            | (MODE_FOSSIL, MODE_DUST)     // the fossil erodes -- what's left is too small to ever spend
     )
 }
 
@@ -579,6 +586,14 @@ fn main() {
         // was won. The exact delta is verified inside the resolve_hunt branch itself, against
         // the choreography table -- not here.
         // no check here -- exact delta verified inside the transition==12 branch below.
+    } else if transition == 13 {
+        // The THIRD and final deliberate exception: crumbling to dust is the one place the
+        // organism is allowed to hit exactly zero. Everywhere else, fee_reserve == 0 means the
+        // heart genuinely cannot beat again -- but here that IS the point. The exact bound
+        // (old fee_reserve must already be true dust, below its own min_output floor) is
+        // verified inside the transition==13 branch below.
+        assert!(new_dna.fee_reserve < old_dna.fee_reserve,
+            "crumbling must still reduce fee_reserve -- dust settles, it doesn't grow");
     } else {
         assert!(new_dna.fee_reserve < old_dna.fee_reserve,
             "fee_reserve must strictly decrease -- every heartbeat costs something");
@@ -1141,6 +1156,28 @@ fn main() {
         assert_eq!(new_dna.hunt_target_id, [0u8; 32], "hunt_target_id must reset to 0 after resolution");
         assert_eq!(new_dna.hunter_move_commit, [0u8; 32], "hunter_move_commit must reset to 0 after resolution");
         assert_eq!(new_dna.prey_move_commit, [0u8; 32], "prey_move_commit must reset to 0 after resolution");
+    } else if transition == 13 {
+        // ── Stage 13: CRUMBLE -- ashes to ashes, the true and final end ──
+        // Permissionless, same ethos as fossilization itself: nobody needs permission for
+        // dust to settle. Only fires when what remains is genuinely too small to ever exist
+        // as a real spendable output again (below the organism's OWN min_output floor, the
+        // same KIP-9-style storage-mass threshold every other chromosome already respects) --
+        // this isn't killing a living organism, it's formally writing off a value that was
+        // already unrecoverable. There is no transition out of MODE_DUST. This is the end.
+        assert_eq!(old_dna.mode, MODE_FOSSIL, "only a fossilized organism can crumble to dust");
+        assert_eq!(new_dna.mode, MODE_DUST, "crumbling always lands in dust -- terminal, no way back");
+        assert_eq!(old_dna.fossilized, 1, "cannot crumble something that was never fossilized");
+        assert!(old_dna.fee_reserve < old_dna.min_output,
+            "only true dust -- an amount too small to ever be spent as a real output -- can crumble");
+        assert_eq!(new_dna.fee_reserve, 0, "crumbling writes the dust off to zero -- it can never be recovered as a real output anyway");
+        assert_eq!(new_dna.dusted_at_daa, current_daa, "dusted_at_daa must record the exact moment it crumbled");
+
+        // The grave record persists one last time, unchanged, into its final resting form.
+        assert_eq!(new_dna.fall_reason, old_dna.fall_reason, "fall_reason is preserved even in dust");
+        assert_eq!(new_dna.fallen_at_daa, old_dna.fallen_at_daa, "fallen_at_daa is preserved even in dust");
+        assert_eq!(new_dna.redemption_deadline, old_dna.redemption_deadline, "redemption_deadline is preserved even in dust");
+        assert_eq!(new_dna.redemption_progress, old_dna.redemption_progress, "redemption_progress is preserved even in dust");
+        assert_eq!(new_dna.fossilized, 1, "fossilized marker persists -- dust remembers what it was");
     } else {
         panic!("unknown transition kind");
     }
