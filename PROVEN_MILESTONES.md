@@ -414,3 +414,25 @@ longer a one-way arc ending at DUST -- it is a real cycle: STEM/VAULT -> ... -> 
 -> DUST -> IGNITE -> STEM again, as long as the same owner still holds the secret. Code:
 `covenants/scorpion_brain_stage14_phoenix/`. Nothing deployed to mainnet yet -- local
 proof-of-mechanism only.
+
+## 2026-07-06 (cont. 3) — Stage 15: IGNITING, the full 7-proof lifecycle chain, local — birth to ashes to rebirth in one unbroken sequence
+
+Not a new chromosome — the proof that the complete 14-chromosome lifecycle is a real, repeatable
+CYCLE, not 14 isolated tricks. One process, 7 consecutive real RISC0/STARK proofs, each receipt's
+new_dna feeding directly into the next proof's old_dna, ONE covenant_id and ONE owner_secret the
+entire way through:
+
+HATCH (STEM gen0->VAULT gen1) -> MOULT (gen1->gen2) -> FALL (starved, gen2->FALLEN gen3) ->
+FOSSILIZE (redemption missed, gen3->FOSSIL gen4) -> CRUMBLE (gen4->DUST gen5, fee_reserve->0) ->
+**IGNITE (DUST gen5 -> STEM gen6, fee_reserve 0->60M resupplied, SAME covenant_id/owner/creation_daa/txid)**
+-> MOULT (gen6->VAULT gen7, alive again).
+
+All 7 verified locally (`receipt.verify()` passed on every step). Two real test-harness bugs found
+and fixed along the way: (1) metabolism rate-window reset requires window_spend_count to hard-reset
+to exactly 1 whenever the DAA jump exceeds rate_window, not old+1 -- every jump in this chain exceeded
+the window so this bit on the very first MOULT; (2) transition 7 (FALL) needs an extra `reason: u8`
+witness byte the generic proof-runner didn't originally support.
+
+Code: `covenants/scorpion_brain_stage15_full_cycle/`. Local-proof-only -- Stage 10's single mainnet
+hatch (entry above, genesis+1 heartbeat) remains the only piece of this organism live on Kaspa mainnet.
+This stage is the reference implementation for a future full mainnet hop-chain deployment.
