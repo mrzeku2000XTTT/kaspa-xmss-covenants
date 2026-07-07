@@ -546,3 +546,48 @@ Guest image ID (fresh, post-rebuild, verified changed from Stage 18's
 `f063b2a93c7adb5fb0b37d89c52898027224ab1ee2204a5bca893ebabdaa5f50`
 
 Status: local-proof only, same as Stages 11-18. Folder: `covenants/scorpion_brain_stage19_arma/`.
+
+## 2026-07-07 (cont.) — Stage 20: "Crosschain Atomic Transfer" — HTLC chromosome, local
+
+New Chromosome 20 (transition 17). DNA grows 914 -> 955 bytes: `swap_hash` (32B, sha256
+of the secret, committed at INIT), `swap_timeout_daa` (u64, absolute refund deadline),
+`swap_active` (u8 flag).
+
+A real HTLC (hash + time locked contract) built directly into the organism's own state
+machine -- the exact primitive that makes atomic swaps between independent chains (or
+independent scorpion covenants) possible. action byte selects sub-behavior:
+- 0 = INIT: commit hash+timeout (timeout must be >= MIN_SWAP_WINDOW_DAA=100 in the future).
+- 1 = CLAIM: reveal the preimage -- deliberately NOT owner-gated (knowledge of the secret
+  IS the authorization). The revealed secret is committed in the clear to the STARK
+  receipt's public journal (appended after the usual 66-byte header) so any observer can
+  read it straight off the accepted proof.
+- 2 = REFUND: timeout passed, nobody claimed -- permissionless cancel, no signature,
+  mirrors Chromosome 3's sentinel dead-man's-switch.
+
+Part 1 -- single-scorpion mechanics, 5 real proofs, all `receipt.verify()` passing:
+1. HATCH: STEM(gen0) -> VAULT(gen1).
+2. SWAP_INIT: commits a hash + 200-DAA-future timeout.
+3. SWAP_CLAIM: reveals the correct secret -- unlocks, secret confirmed present in the
+   clear in the receipt's public journal ("the-scorpion-and-the-frog-cross-the-river").
+4. A second SWAP_INIT + SWAP_REFUND: nobody claims, timeout passes, permissionless
+   refund succeeds, secret never revealed.
+5. NEGATIVE: CLAIM with the WRONG secret -- correctly rejected on
+   "revealed secret does not match the committed swap_hash".
+
+Part 2 -- the actual point, SCORPION <-> SCORPION atomic swap, 6 more real proofs: two
+INDEPENDENT scorpion covenant instances (different covenant_id, different owner) --
+Alice and Bob -- hatched separately, then swap with each other. Bob picks a secret and
+gives Alice only the hash. Alice INITs first on her own covenant with the LONGER
+timeout (first-mover risk); Bob mirrors second on his own covenant with a SHORTER
+timeout (standard atomic-swap safety margin). Bob CLAIMs Alice's lock, which makes the
+secret publicly readable in Scorpion A's accepted journal; Alice extracts it straight
+from that public proof (no side channel to Bob needed) and CLAIMs Bob's lock with it.
+Both scorpions end with swap_active=0 -- neither could take the other's value without
+revealing the exact key that lets the other claim theirs. Atomicity via STARK proofs
+and a shared hash, not trust.
+
+Guest image ID (fresh, post-rebuild, verified changed from Stage 19's
+f063b2a93c7adb5fb0b37d89c52898027224ab1ee2204a5bca893ebabdaa5f50):
+`014004cf2621fc40ab2700597fe10a2004ce6a30128c23f01e2038b81f822d21`
+
+Status: local-proof only, same as Stages 11-19. Folder: `covenants/scorpion_brain_stage20_atomic_swap/`.
