@@ -510,3 +510,39 @@ resets, not even through death/rebirth.
 Guest image ID (fresh, post-rebuild, verified changed): `148b87564d87afc500d5a906f93bb2e4c0af57168ee9fabed7c7b47105059029`
 
 Status: local-proof only, same as Stages 11-17. Folder: `covenants/scorpion_brain_stage18_world_genesis/`.
+
+## 2026-07-07 (cont.) — Stage 19: "ARMA" — assembly/consent separation chromosome, local
+
+New Chromosome 19 (transition 16, GENERATE_WORLD's sibling). DNA grows 902 -> 914 bytes:
+`last_batch_size` (u32, records the batch_size just consented to), `total_batched_transitions`
+(u64, append-only cumulative count across all ARMA batches ever consented to).
+
+Named for the real academic BFT design that splits a pipeline into many parallel
+ASSEMBLERS (batch/chain data off-chain, scaling with bandwidth/CPU) and one thin
+CONSENTER (only orders/finalizes batch commitments). Here: an off-chain assembler
+pre-computes an entire internal chain of ordinary VAULT->VAULT heartbeats. ONE on-chain
+proof verifies the whole internal chain in a single shot and finalizes only the LAST
+state -- generation/transition_count advance by batch_size instead of a fixed 1. The
+organism's own throughput scales with what its assembler prepared; the on-chain
+footprint stays exactly one transition, same as every other kind.
+
+New helper `assert_hop_valid` checks each internal hop (generation+1, transition_count+1,
+fee_reserve strictly decreasing, memory-linked via sha256, everything else frozen except
+prev_mode on the very first hop and the rate-window/ARMA bookkeeping, which only matter
+on the final committed state).
+
+3 real proofs, all `receipt.verify()` passing locally:
+1. HATCH: STEM(gen0) -> VAULT(gen1).
+2. ARMA_CONSENT: assembled 5 ordinary heartbeats off-chain, consented to the whole batch
+   in ONE proof. VAULT(gen1) -> VAULT(gen6). transition_count +5, total_batched_transitions 0->5.
+3. NEGATIVE: an assembled batch where one inner hop's fee_reserve does not strictly
+   decrease relative to the true previous hop -- correctly rejected on
+   "fee_reserve must strictly decrease per hop -- every assembled heartbeat still costs something".
+   (First tamper attempt was too small a delta and still passed as a valid decrease --
+   fixed by forcing the tampered fee strictly above the true previous hop's fee.)
+
+Guest image ID (fresh, post-rebuild, verified changed from Stage 18's
+148b87564d87afc500d5a906f93bb2e4c0af57168ee9fabed7c7b47105059029):
+`f063b2a93c7adb5fb0b37d89c52898027224ab1ee2204a5bca893ebabdaa5f50`
+
+Status: local-proof only, same as Stages 11-18. Folder: `covenants/scorpion_brain_stage19_arma/`.
