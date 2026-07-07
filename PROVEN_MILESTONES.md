@@ -485,3 +485,28 @@ Three real local proofs, chained (`host/src/bin/incubation.rs`):
 
 Code: `covenants/scorpion_brain_stage17_incubation/`. Local-proof-only -- Stage 10's single mainnet
 hatch remains the only piece of this organism live on Kaspa mainnet.
+
+## 2026-07-07 (cont.) — Stage 18: "A Scorpion Who Generates Worlds" — world genesis chromosome, local
+
+New Chromosome 18 (transition 15, GENERATE_WORLD). DNA grows 862 -> 902 bytes:
+`world_chain_hash` (32B, append-only hash chain of every world ever seeded, sha256(prev||covenant_id||script_hash)),
+`worlds_spawned` (u32), `max_worlds` (u32, immutable birth-time cap).
+
+Unlike reproduction (Chromosome 6, transition 5) which spawns more scorpions (same DNA
+shape/rules), world genesis lets the scorpion seed an ENTIRELY unrelated covenant --
+any redeem-script template, any species -- with zero structural constraints on what's
+authorized. Only provenance is enforced on-chain: the running hash chain, which never
+resets, not even through death/rebirth.
+
+4 real proofs, all `receipt.verify()` passing locally:
+1. HATCH: STEM(gen0) -> VAULT(gen1), max_worlds=2 set at birth.
+2. GENERATE_WORLD #1: VAULT(gen1) -> VAULT(gen2), worlds_spawned 0->1 (zktimelock-shaped world seeded).
+3. GENERATE_WORLD #2: VAULT(gen2) -> VAULT(gen3), worlds_spawned 1->2 == max_worlds (sentinel-shaped world seeded).
+4. NEGATIVE: GENERATE_WORLD #3 attempted, worlds_spawned would be 3 > max_worlds=2 -- correctly
+   rejected on `"cannot exceed max_worlds"` (first attempt accidentally hit an unrelated rate-window
+   expiry instead due to a test-harness DAA-gap bug; fixed by tightening gaps to stay inside the
+   window, then re-ran and got the intended rejection reason).
+
+Guest image ID (fresh, post-rebuild, verified changed): `148b87564d87afc500d5a906f93bb2e4c0af57168ee9fabed7c7b47105059029`
+
+Status: local-proof only, same as Stages 11-17. Folder: `covenants/scorpion_brain_stage18_world_genesis/`.
