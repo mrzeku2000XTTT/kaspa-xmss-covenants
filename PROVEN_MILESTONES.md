@@ -459,3 +459,29 @@ Regression-checked: Stage 14's original test and Stage 15's full 7-proof lifecyc
 hardcoded IGNITE DAA gaps bumped from 50,000 to 259,200+ and re-run successfully end-to-end.
 
 Code: `covenants/scorpion_brain_stage16_harrowing/`. Local-proof-only.
+
+## 2026-07-07 — Stage 17: "111" — newborn incubation gate added to post-IGNITE STEM exit, local
+
+New DNA field `reborn_at_daa: u64` appended to the end of the blob (DNA_LEN 854 -> 862 bytes),
+set by IGNITE (transition 14) to `current_daa` -- the exact permanent moment of rebirth. New global
+invariant: if `old_dna.mode == STEM && old_dna.reborn_at_daa != 0 && new_dna.mode != STEM` (the
+newborn's first real departure from STEM), the transition additionally requires
+`current_daa >= old_dna.reborn_at_daa + 111`. Unlike Chr11's redemption_deadline (which expires),
+this is a MINIMUM like Stage 16's tomb -- it never expires, and applies no matter who holds
+owner_secret. 111 is the angel number (new beginnings, alignment), made load-bearing.
+
+Note: this sandbox's local Rust/RISC0 toolchain and `kaspa_wrpc/keys/` had been wiped by an
+environment reset since Stage 16 -- both were reinstalled/regenerated fresh this session
+(fresh throwaway owner_secret + covenant_id, saved to file before use per the mandatory key-backup
+rule; purely local test material, no mainnet funds involved).
+
+Three real local proofs, chained (`host/src/bin/incubation.rs`):
+1. IGNITE: DUST (gen20) -> STEM (gen21) at the Stage 16 three-day boundary, fee resupplied,
+   `reborn_at_daa` recorded = ignite_daa. VERIFIED.
+2. NEGATIVE: MOULT (STEM -> VAULT) attempted 1 DAA short of the 111-DAA window -> correctly
+   REJECTED ("the newborn must rest 111 DAA in the cradle before its first true step out of stem").
+3. POSITIVE: identical MOULT at exactly 111 DAA after rebirth (the `>=` boundary) -> VERIFIED,
+   gen21 STEM -> gen22 VAULT.
+
+Code: `covenants/scorpion_brain_stage17_incubation/`. Local-proof-only -- Stage 10's single mainnet
+hatch remains the only piece of this organism live on Kaspa mainnet.
