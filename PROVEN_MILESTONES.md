@@ -591,3 +591,29 @@ f063b2a93c7adb5fb0b37d89c52898027224ab1ee2204a5bca893ebabdaa5f50):
 `014004cf2621fc40ab2700597fe10a2004ce6a30128c23f01e2038b81f822d21`
 
 Status: local-proof only, same as Stages 11-19. Folder: `covenants/scorpion_brain_stage20_atomic_swap/`.
+
+## KasSigner Air-Gapped Signing Bridge (tooling, not a covenant stage)
+
+Not a new chromosome/proof -- a software bridge to a real third-party
+air-gapped hardware signer (github.com/InKasWeRust/KasSigner, ESP32-S3,
+keys live only in device RAM). Implements the device firmware's exact
+binary wire formats (KSPT v1 unsigned request / KSPT v3 signed response),
+reverse-engineered from the reference open-source repo.
+
+Verified (13/13 checks, `test_kassigner_bridge.mjs`) against our real
+already-deployed `zkescrow_v2` covenant script (216 bytes): our JS
+opcode-aware scanner finds the same buyer/seller/arbiter candidate pubkeys
+the real firmware scanner would, the unsigned KSPT v1 request builds
+correctly, and a simulated signature round-trips byte-identical through the
+signed v3 format with a passing `schnorr.verify`.
+
+**Works for:** zktimelock, zkescrow, multisig, sentinel-with-signature --
+any covenant with a plain `<pubkey> OP_CHECKSIG` branch under the device's
+1024-byte redeem-script buffer.
+**Does not fit:** scorpion_brain / zkgate-risc0 -- their RISC0/STARK
+verifier scripts run 10-65x past the device's 1024-byte firmware buffer
+(ESP32-S3 SRAM limit, not fixable in software).
+
+Status: software-only wire-format proof. No physical device has been used.
+No key has been imported to hardware. No mainnet spend uses this bridge
+yet. Folder: `covenants/kassigner_airgap_bridge/`.
