@@ -1193,7 +1193,6 @@ function navTo(tab) {
   document.getElementById('page-dashboard').classList.toggle('hidden', tab !== 'dashboard');
   document.getElementById('page-covenants').classList.toggle('hidden', tab !== 'covenants');
   document.getElementById('page-send').classList.toggle('hidden', tab !== 'send');
-  document.getElementById('page-chat').classList.toggle('hidden', tab !== 'chat');
   const titles = { dashboard: 'Scorpion Wallet', covenants: 'Covenants', send: 'Send KAS', chat: 'AI Assistant' };
   document.getElementById('nav-title').textContent = titles[tab] || 'Scorpion Wallet';
   document.getElementById('nav-left').textContent = tab === 'dashboard' ? '' : '‹ Wallet';
