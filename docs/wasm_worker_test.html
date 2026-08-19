@@ -1,0 +1,92 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>WASM Worker Test</title></head><body>
+<h1>Kaspa WASM SDK — Web Worker Test</h1>
+<pre id="log"></pre>
+<script type="module">
+const log = document.getElementById('log');
+function out(msg) { log.textContent += msg + '\n'; }
+
+// Create worker from blob
+const workerCode = `
+import * as kaspa from 'https://esm.sh/@onekeyfe/kaspa-wasm@1.0.2';
+
+self.onmessage = async (e) => {
+  try {
+    if (e.data.type === 'init') {
+      self.postMessage({ type: 'log', msg: 'Worker: importing SDK done' });
+      
+      self.postMessage({ type: 'log', msg: 'Worker: fetching WASM binary...' });
+      const wasmRes = await fetch('https://unpkg.com/@onekeyfe/kaspa-wasm@1.0.2/kaspa_bg.wasm.bin');
+      const wasmBytes = await wasmRes.arrayBuffer();
+      self.postMessage({ type: 'log', msg: 'Worker: WASM size: ' + wasmBytes.byteLength });
+      
+      self.postMessage({ type: 'log', msg: 'Worker: compiling WASM...' });
+      const wasmModule = await WebAssembly.compile(wasmBytes);
+      self.postMessage({ type: 'log', msg: 'Worker: compiled. Calling initSync...' });
+      
+      kaspa.initSync({ module: wasmModule });
+      self.postMessage({ type: 'log', msg: 'Worker: ✅ initSync succeeded!' });
+      
+      // Test createAddress
+      const pk = new kaspa.PrivateKey();
+      const addr = kaspa.createAddress(pk, 'mainnet');
+      self.postMessage({ type: 'log', msg: 'Worker: ✅ Address: ' + addr.toString() });
+      
+      // Test createTransactions
+      const entries = [{
+        address: addr.toString(),
+        outpoint: { transactionId: 'a'.repeat(64), index: 0 },
+        amount: BigInt(100000000),
+        scriptPublicKey: { version: 0, script: '2088' + 'a'.repeat(60) + 'ac' },
+        blockDaaScore: BigInt(1000),
+        isCoinbase: false,
+      }];
+      const result = await kaspa.createTransactions({
+        entries,
+        outputs: [{ address: addr.toString(), amount: BigInt(50000000) }],
+        changeAddress: addr.toString(),
+        priorityFee: BigInt(5000),
+        networkId: 'mainnet',
+      });
+      const tx = result.transactions[0].transaction;
+      self.postMessage({ type: 'log', msg: 'Worker: ✅ createTransactions: ' + tx.inputs.length + ' inputs, ' + tx.outputs.length + ' outputs' });
+      
+      // Test createInputSignature
+      for (let i = 0; i < tx.inputs.length; i++) {
+        const sig = kaspa.createInputSignature(tx, i, pk, 1);
+        tx.inputs[i].signatureScript = sig;
+        self.postMessage({ type: 'log', msg: 'Worker: ✅ Input ' + i + ' signed, sig len: ' + sig.length });
+      }
+      
+      self.postMessage({ type: 'log', msg: 'Worker: 🎉 ALL TESTS PASSED!' });
+      self.postMessage({ type: 'done' });
+    }
+  } catch(err) {
+    self.postMessage({ type: 'log', msg: 'Worker: ❌ Error: ' + err.message });
+    self.postMessage({ type: 'log', msg: err.stack || '' });
+    self.postMessage({ type: 'done' });
+  }
+};
+`;
+
+const blob = new Blob([workerCode], { type: 'application/javascript' });
+const workerUrl = URL.createObjectURL(blob);
+out('Creating worker...');
+const worker = new Worker(workerUrl, { type: 'module' });
+
+worker.onmessage = (e) => {
+  if (e.data.type === 'log') {
+    out(e.data.msg);
+  } else if (e.data.type === 'done') {
+    out('\n✅ Worker test complete');
+    worker.terminate();
+  }
+};
+
+worker.onerror = (e) => {
+  out('❌ Worker error: ' + e.message);
+};
+
+out('Sending init message...');
+worker.postMessage({ type: 'init' });
+</script>
+</body></html>
