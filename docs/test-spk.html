@@ -1,0 +1,55 @@
+<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body>
+<pre id="log">Loading...</pre>
+<script type="module">
+const log = s => { document.getElementById('log').textContent += '\n' + s; };
+try {
+  const kaspa = await import('https://esm.sh/@onekeyfe/kaspa-wasm@1.0.2?bundle');
+  await kaspa.default();
+  log('SDK ready');
+  log('ScriptPublicKey: ' + typeof kaspa.ScriptPublicKey);
+  log('addressFromScriptPublicKey: ' + typeof kaspa.addressFromScriptPublicKey);
+  
+  // Test with a dummy P2SH script
+  const hashBytes = new Uint8Array(32);
+  crypto.getRandomValues(hashBytes);
+  const spkBytes = new Uint8Array([0xaa, 0x20, ...hashBytes, 0x87]);
+  log('spkBytes: ' + spkBytes.length + ' bytes');
+  
+  // Try different constructor forms
+  try {
+    const spk = new kaspa.ScriptPublicKey(0, spkBytes);
+    log('ScriptPublicKey(0, bytes): ' + typeof spk);
+    log('spk.script: ' + typeof spk.script);
+    log('spk.version: ' + spk.version);
+    try {
+      const addr = kaspa.addressFromScriptPublicKey(spk, 'mainnet');
+      log('addressFromScriptPublicKey(spk,"mainnet"): ' + addr.toString());
+    } catch(e) { log('afspk(spk) err: ' + e.message); }
+  } catch(e) { log('SPK(0,bytes) err: ' + e.message); }
+  
+  // Try with just bytes
+  try {
+    const addr2 = kaspa.addressFromScriptPublicKey(spkBytes, 'mainnet');
+    log('addressFromScriptPublicKey(bytes,"mainnet"): ' + addr2.toString());
+  } catch(e) { log('afspk(bytes) err: ' + e.message); }
+  
+  // Try with {version, script}
+  try {
+    const addr3 = kaspa.addressFromScriptPublicKey({ version: 0, script: spkBytes }, 'mainnet');
+    log('addressFromScriptPublicKey({version,script},"mainnet"): ' + addr3.toString());
+  } catch(e) { log('afspk({v,s}) err: ' + e.message); }
+  
+  // Try with {version, scriptPublicKey}
+  try {
+    const addr4 = kaspa.addressFromScriptPublicKey({ version: 0, scriptPublicKey: spkBytes }, 'mainnet');
+    log('addressFromScriptPublicKey({version,scriptPublicKey},"mainnet"): ' + addr4.toString());
+  } catch(e) { log('afspk({v,spk}) err: ' + e.message); }
+
+  // Check ScriptPublicKey prototype
+  try {
+    const spk2 = new kaspa.ScriptPublicKey(0, spkBytes);
+    log('SPK props: ' + Object.getOwnPropertyNames(Object.getPrototypeOf(spk2)).join(','));
+  } catch(e) {}
+} catch(e) { log('Error: ' + e.message + '\n' + e.stack); }
+</script>
+</body></html>

@@ -291,16 +291,19 @@ let currentTab = 'dashboard';
 let keyVisible = false;
 
 // ═══ SDK Initialization ═══
+let sdkInitPromise = null;
 async function initSDK() {
   if (sdkReady) return;
-  showLoading('Loading Kaspa SDK…');
-  const mod = await import('https://esm.sh/@onekeyfe/kaspa-wasm@1.0.2?bundle');
-  const h = await import('https://esm.sh/@noble/hashes@1.3.3/blake2b');
-  kaspa = mod;
-  blake2bFn = h.blake2b;
-  await kaspa.default();
-  sdkReady = true;
-  hideLoading();
+  if (sdkInitPromise) return sdkInitPromise;
+  sdkInitPromise = (async () => {
+    const mod = await import('https://esm.sh/@onekeyfe/kaspa-wasm@1.0.2?bundle');
+    const h = await import('https://esm.sh/@noble/hashes@1.3.3/blake2b');
+    kaspa = mod;
+    blake2bFn = h.blake2b;
+    await kaspa.default();
+    sdkReady = true;
+  })();
+  return sdkInitPromise;
 }
 
 // ═══ Cashaddr helpers (for decoding addresses to extract pubkeys) ═══
@@ -738,8 +741,21 @@ async function computeCovenant(type, params, pubKeyHex, extraData) {
 
   const scriptHash = blake2bFn(redeemScript, { dkLen: 32 });
   const spkBytes = new Uint8Array([0xaa, 0x20, ...scriptHash, 0x87]);
-  const spk = new kaspa.ScriptPublicKey(0, spkBytes);
-  const p2shAddr = kaspa.addressFromScriptPublicKey(spk, 'mainnet');
+  let p2shAddr;
+  try {
+    const spk = new kaspa.ScriptPublicKey(0, spkBytes);
+    p2shAddr = kaspa.addressFromScriptPublicKey(spk, 'mainnet');
+  } catch(e1) {
+    try {
+      p2shAddr = kaspa.addressFromScriptPublicKey(spkBytes, 'mainnet');
+    } catch(e2) {
+      try {
+        p2shAddr = kaspa.addressFromScriptPublicKey({ version: 0, script: spkBytes }, 'mainnet');
+      } catch(e3) {
+        throw new Error('Cannot create P2SH address: ' + e3.message);
+      }
+    }
+  }
 
   let description = '', extraInfo = {};
   if (type === 'timelock') {
@@ -1012,7 +1028,11 @@ async function init() {
   updateManualForm('timelock');
 
   // Preload SDK in background
-  initSDK().catch(e => {
+  showLoading('Loading Kaspa SDK…');
+  initSDK().then(() => {
+    hideLoading();
+  }).catch(e => {
+    hideLoading();
     console.error('SDK init failed:', e);
     showToast('SDK load failed: ' + e.message);
   });
