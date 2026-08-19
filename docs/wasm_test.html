@@ -1,0 +1,49 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>Kaspa WASM Test</title></head><body>
+<h1>Kaspa WASM SDK Browser Test</h1>
+<pre id="log"></pre>
+<script type="module">
+const log = document.getElementById('log');
+function out(msg) { log.textContent += msg + '\n'; }
+
+out('Importing @onekeyfe/kaspa-wasm from esm.sh...');
+try {
+  const kaspa = await import('https://esm.sh/@onekeyfe/kaspa-wasm@1.0.2');
+  out('Module imported. Exports: ' + Object.keys(kaspa).join(', ').slice(0,200));
+
+  out('\nTrying init()...');
+  try {
+    await kaspa.init();
+    out('init() succeeded');
+  } catch(e) {
+    out('init() failed: ' + e.message);
+    out('\nTrying initSync with embedded WASM...');
+    try {
+      const wasmModule = await import('https://esm.sh/@onekeyfe/kaspa-wasm@1.0.2/es2022/kaspa_bg.wasm.mjs');
+      out('WASM module keys: ' + Object.keys(wasmModule).join(', '));
+      if (wasmModule.default) {
+        out('Calling default()...');
+        const wasm = wasmModule.default();
+        out('WASM type: ' + (wasm ? wasm.constructor.name : 'null'));
+        kaspa.initSync({ module: wasm });
+        out('initSync succeeded!');
+      }
+    } catch(e2) {
+      out('initSync failed: ' + e2.message);
+    }
+  }
+
+  out('\nTesting createAddress...');
+  try {
+    const { PrivateKey, createAddress } = kaspa;
+    const pk = new PrivateKey();
+    const addr = createAddress(pk, 'mainnet');
+    out('Address: ' + addr);
+  } catch(e) {
+    out('createAddress failed: ' + e.message);
+  }
+} catch(e) {
+  out('Import failed: ' + e.message);
+  out(e.stack || '');
+}
+</script>
+</body></html>
