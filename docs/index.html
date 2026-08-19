@@ -268,6 +268,7 @@ textarea.input-field { resize: vertical; min-height: 60px; font-family: monospac
   <div class="tab" data-tab="send" onclick="navTo('send')"><div class="icon">📤</div><div class="label">Send</div></div>
 </div>
 
+<pre id="debug-log" class="hidden" style="position:fixed;top:0;left:0;right:0;z-index:9999;background:rgba(0,0,0,0.9);color:#0f0;font-size:10px;padding:8px;max-height:200px;overflow:auto;white-space:pre-wrap;"></pre>
 <script>
 // ════════════════════════════════════════════════════════════════
 // Scorpion Wallet — Non-custodial Kaspa wallet with KCC20 covenants
@@ -660,9 +661,19 @@ function updateManualForm(type) {
   }
 }
 
+function debugLog(msg) {
+  console.log('[COV DEBUG]', msg);
+  const el = document.getElementById('debug-log');
+  if (el) { el.textContent += '\n' + msg; el.classList.remove('hidden'); }
+}
+
 async function buildManualCovenant() {
-  await initSDK();
-  const type = document.querySelector('.seg.active').dataset.type;
+  debugLog('buildManualCovenant called');
+  try {
+    await initSDK();
+    debugLog('SDK ready: ' + sdkReady);
+    const type = document.querySelector('.seg.active').dataset.type;
+    debugLog('type: ' + type);
   let params = {}, extraData = {};
   if (type === 'timelock') {
     params = { amountKas: parseFloat(document.getElementById('ct-amount').value), lockDays: parseFloat(document.getElementById('ct-days').value) };
@@ -689,7 +700,9 @@ async function buildManualCovenant() {
 
   showLoading('Computing covenant…');
   try {
+    debugLog('Calling computeCovenant with type=' + type + ' pubKey=' + (wallet.pubKey||'NONE'));
     const result = await computeCovenant(type, params, wallet.pubKey, extraData);
+    debugLog('computeCovenant result: ' + JSON.stringify(result).slice(0,200));
     hideLoading();
     showCovenantReview(type, params, result);
   } catch(e) {
@@ -700,10 +713,13 @@ async function buildManualCovenant() {
 }
 
 async function computeCovenant(type, params, pubKeyHex, extraData) {
+  debugLog('computeCovenant: start, type=' + type);
   const myPkX = hexToBytes(pubKeyHex);
+  debugLog('computeCovenant: myPkX length=' + myPkX.length);
   const daaRes = await fetch('https://api.kaspa.org/info/blockdag');
   const daaData = await daaRes.json();
   const currentDaa = Number(daaData.virtualDaaScore);
+  debugLog('computeCovenant: currentDaa=' + currentDaa);
   let redeemScript;
 
   if (type === 'timelock') {
@@ -743,8 +759,11 @@ async function computeCovenant(type, params, pubKeyHex, extraData) {
   const spkBytes = new Uint8Array([0xaa, 0x20, ...scriptHash, 0x87]);
   let p2shAddr;
   try {
+    debugLog('computeCovenant: creating SPK, bytes=' + spkBytes.length);
     const spk = new kaspa.ScriptPublicKey(0, spkBytes);
+    debugLog('computeCovenant: SPK created, calling addressFromScriptPublicKey');
     p2shAddr = kaspa.addressFromScriptPublicKey(spk, 'mainnet');
+    debugLog('computeCovenant: addr=' + p2shAddr.toString());
   } catch(e1) {
     try {
       p2shAddr = kaspa.addressFromScriptPublicKey(spkBytes, 'mainnet');
