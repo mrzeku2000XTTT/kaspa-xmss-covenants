@@ -145,6 +145,16 @@ textarea.input-field { resize: vertical; min-height: 60px; font-family: monospac
 .covenant-item .type { font-size: 15px; font-weight: 600; }
 .covenant-item .addr { font-size: 12px; color: var(--label-tertiary); font-family: monospace; margin-top: 4px; }
 .covenant-item .amt { font-size: 13px; color: var(--label-secondary); margin-top: 2px; }
+.covenant-item .status { font-size: 11px; margin-top: 4px; }
+.covenant-item .status.funded { color: var(--green); }
+.covenant-item .status.pending { color: var(--orange); }
+.covenant-item .status.unlockable { color: var(--green); font-weight: 600; }
+.covenant-item .status.locked { color: var(--label-tertiary); }
+.covenant-actions { margin-top: 10px; display: flex; gap: 8px; }
+.covenant-actions .btn { font-size: 13px; padding: 8px 12px; flex: 1; }
+.cov-back-btn { background: var(--surface2); color: var(--label); border: none; padding: 6px 14px; border-radius: 8px; font-size: 13px; cursor: pointer; margin-top: 8px; }
+.cov-back-btn:active { opacity: 0.6; }
+.network-badge-testnet { color: var(--orange) !important; }
 </style>
 </head>
 <body>
@@ -159,7 +169,9 @@ textarea.input-field { resize: vertical; min-height: 60px; font-family: monospac
 <div class="navbar hidden" id="navbar">
   <div class="navbar-btn left" id="nav-left" onclick="navBack()"></div>
   <div class="navbar-title" id="nav-title">Scorpion Wallet</div>
-  <div class="navbar-btn right" id="nav-right"></div>
+  <div class="navbar-btn right" id="nav-right">
+    <span id="network-toggle" onclick="toggleNetwork()" style="font-size:13px;font-weight:600;cursor:pointer;padding:4px 10px;border-radius:8px;background:var(--surface2);color:var(--blue);">Mainnet</span>
+  </div>
 </div>
 
 <!-- Onboarding -->
@@ -195,6 +207,10 @@ textarea.input-field { resize: vertical; min-height: 60px; font-family: monospac
     <div class="action-grid" style="grid-template-columns: 1fr 1fr;">
       <div class="action-btn" onclick="showWalletSwitcher()"><div class="icon">🔄</div><div class="label">Switch Wallet</div></div>
       <div class="action-btn" onclick="showAddWallet()"><div class="icon">➕</div><div class="label">Add Wallet</div></div>
+    </div>
+    <div class="action-grid" style="grid-template-columns: 1fr 1fr;">
+      <div class="action-btn" onclick="showSweepWallet()"><div class="icon">🧹</div><div class="label">Sweep All</div></div>
+      <div class="action-btn" onclick="navTo('covenants')"><div class="icon">📋</div><div class="label">My Covenants</div></div>
     </div>
     <div class="card">
       <div class="card-title">Active Wallet — <span id="wallet-label" style="color:var(--blue);">—</span></div>
@@ -279,10 +295,19 @@ textarea.input-field { resize: vertical; min-height: 60px; font-family: monospac
 // Keys never leave the browser. No backend relay. No custody.
 // ════════════════════════════════════════════════════════════════
 
-const API_BASE = 'https://api.kaspa.org';
 const AI_ENDPOINT = 'https://superagent-c8d6f2a6.base44.app/functions/covenantIntentAI';
 const KASPA_PRICE_API = 'https://api.coingecko.com/api/v3/simple/price?ids=kaspa&vs_currencies=usd';
 const DAA_PER_DAY = 864000;
+
+// Network state — toggleable between mainnet and testnet-10
+let currentNetwork = localStorage.getItem('scorpion_network') || 'mainnet';
+const NETWORKS = {
+  mainnet: { id: 'mainnet', apiBase: 'https://api.kaspa.org', label: 'Mainnet', wrpc: 'wss://ivy.kaspa.green/kaspa/mainnet/wrpc/borsh' },
+  testnet10: { id: 'testnet-10', apiBase: 'https://tn-10.kaspa.org/api', label: 'Testnet-10', wrpc: 'wss://tn-10.kaspa.green/kaspa/testnet-10/wrpc/borsh' }
+};
+function getApiBase() { return NETWORKS[currentNetwork].apiBase; }
+function getNetworkId() { return NETWORKS[currentNetwork].id; }
+function getWrpcUrl() { return NETWORKS[currentNetwork].wrpc; }
 
 // ═══ SDK State ═══
 let kaspa = null;
@@ -294,6 +319,29 @@ let wallet = null;
 let covenants = [];
 let currentTab = 'dashboard';
 let keyVisible = false;
+
+function toggleNetwork() {
+  currentNetwork = currentNetwork === 'mainnet' ? 'testnet10' : 'mainnet';
+  localStorage.setItem('scorpion_network', currentNetwork);
+  updateNetworkToggle();
+  showToast('Switched to ' + NETWORKS[currentNetwork].label);
+  // Wallets are network-specific, so reload
+  wallet = null;
+  if (!loadWallet()) {
+    showOnboarding();
+  } else {
+    showDashboard();
+  }
+  refreshBalance();
+  fetchUTXOs();
+  renderCovenants();
+}
+function updateNetworkToggle() {
+  const el = document.getElementById('network-toggle');
+  if (!el) return;
+  el.textContent = NETWORKS[currentNetwork].label;
+  el.classList.toggle('network-badge-testnet', currentNetwork === 'testnet10');
+}
 
 // ═══ SDK Initialization ═══
 let sdkInitPromise = null;
@@ -413,14 +461,14 @@ function pushData(buf) {
 async function getRpcUrl() {
   try {
     const resolver = new kaspa.Resolver();
-    return await resolver.getUrl('borsh', 'mainnet');
+    return await resolver.getUrl('borsh', getNetworkId());
   } catch {
-    return 'wss://ivy.kaspa.green/kaspa/mainnet/wrpc/borsh';
+    return getWrpcUrl();
   }
 }
 async function broadcastTx(tx) {
   const url = await getRpcUrl();
-  const rpc = new kaspa.RpcClient({ url, networkId: 'mainnet' });
+  const rpc = new kaspa.RpcClient({ url, networkId: getNetworkId() });
   await rpc.connect();
   let txId;
   try {
@@ -459,8 +507,8 @@ async function newWallet() {
   try {
     const hex = randomHexKey();
     const pk = pkFromHex(hex);
-    const addr = pk.toAddress('mainnet');
-    const kp = pk.toKeypair('mainnet');
+    const addr = pk.toAddress(getNetworkId());
+    const kp = pk.toKeypair(getNetworkId());
     const wallets = getAllWallets();
     const label = 'Wallet ' + (wallets.length + 1);
     wallet = {
@@ -491,8 +539,8 @@ async function importWallet() {
   showLoading('Importing wallet…');
   try {
     const pk = pkFromHex(hex);
-    const addr = pk.toAddress('mainnet');
-    const kp = pk.toKeypair('mainnet');
+    const addr = pk.toAddress(getNetworkId());
+    const kp = pk.toKeypair(getNetworkId());
     const label = 'Wallet ' + (existing.length + 1);
     wallet = {
       privKey: hex,
@@ -722,7 +770,7 @@ function copyAddress() {
 
 async function refreshBalance() {
   try {
-    const res = await fetch(`${API_BASE}/addresses/${wallet.address}/balance`);
+    const res = await fetch(`${getApiBase()}/addresses/${wallet.address}/balance`);
     const data = await res.json();
     const bal = Number(data.balance) / 100000000;
     document.getElementById('balance-kas').textContent = bal.toFixed(4);
@@ -740,7 +788,7 @@ async function refreshBalance() {
 async function fetchUTXOs() {
   const list = document.getElementById('utxo-list');
   try {
-    const res = await fetch(`${API_BASE}/addresses/${wallet.address}/utxos`);
+    const res = await fetch(`${getApiBase()}/addresses/${wallet.address}/utxos`);
     const utxos = await res.json();
     if (!utxos || utxos.length === 0) {
       list.innerHTML = '<div class="muted center" style="padding:12px;">No UTXOs. Send KAS to your address to get started.</div>';
@@ -772,7 +820,7 @@ async function prepareSend() {
 
   showLoading('Fetching UTXOs…');
   try {
-    const utxoRes = await fetch(`${API_BASE}/addresses/${wallet.address}/utxos`);
+    const utxoRes = await fetch(`${getApiBase()}/addresses/${wallet.address}/utxos`);
     const utxos = await utxoRes.json();
     if (!utxos || utxos.length === 0) { hideLoading(); showToast('No UTXOs available'); return; }
     const feeKas = 5000 / 100000000;
@@ -786,7 +834,7 @@ async function prepareSend() {
         { k: 'Amount', v: amount + ' KAS' },
         { k: 'Fee', v: feeKas.toFixed(5) + ' KAS' },
         { k: 'Signed', v: '✅ Client-side' },
-        { k: 'Network', v: 'Mainnet' }
+        { k: 'Network', v: NETWORKS[currentNetwork].label }
       ],
       onConfirm: async () => {
         showLoading('Signing & broadcasting…');
@@ -795,7 +843,7 @@ async function prepareSend() {
           const amountSompi = BigInt(Math.round(amount * 100000000));
           const result = await kaspa.createTransactions({
             entries, outputs: [{ address: dest, amount: amountSompi }],
-            changeAddress: wallet.address, priorityFee: BigInt(5000), networkId: 'mainnet'
+            changeAddress: wallet.address, priorityFee: BigInt(5000), networkId: getNetworkId()
           });
           const tx = result.transactions[0].transaction;
           signTx(tx, wallet.privKey);
@@ -807,7 +855,7 @@ async function prepareSend() {
             details: [
               { k: 'TX ID', v: (txId || '').slice(0, 32) + '…' },
               { k: 'Explorer', v: 'kaspa.fyi/tx/' + (txId || '').slice(0,16) + '…' },
-              { k: 'Network', v: 'Mainnet' }
+              { k: 'Network', v: NETWORKS[currentNetwork].label }
             ],
             onConfirm: () => { closeSheet(); refreshBalance(); fetchUTXOs(); },
             confirmLabel: 'Done'
@@ -895,7 +943,7 @@ async function computeCovenant(type, params, pubKeyHex, extraData) {
   debugLog('computeCovenant: start, type=' + type);
   const myPkX = hexToBytes(pubKeyHex);
   debugLog('computeCovenant: myPkX length=' + myPkX.length);
-  const daaRes = await fetch('https://api.kaspa.org/info/blockdag');
+  const daaRes = await fetch(getApiBase() + '/info/blockdag');
   const daaData = await daaRes.json();
   const currentDaa = Number(daaData.virtualDaaScore);
   debugLog('computeCovenant: currentDaa=' + currentDaa);
@@ -941,14 +989,14 @@ async function computeCovenant(type, params, pubKeyHex, extraData) {
     debugLog('computeCovenant: creating SPK, bytes=' + spkBytes.length);
     const spk = new kaspa.ScriptPublicKey(0, spkBytes);
     debugLog('computeCovenant: SPK created, calling addressFromScriptPublicKey');
-    p2shAddr = kaspa.addressFromScriptPublicKey(spk, 'mainnet');
+    p2shAddr = kaspa.addressFromScriptPublicKey(spk, getNetworkId());
     debugLog('computeCovenant: addr=' + p2shAddr.toString());
   } catch(e1) {
     try {
-      p2shAddr = kaspa.addressFromScriptPublicKey(spkBytes, 'mainnet');
+      p2shAddr = kaspa.addressFromScriptPublicKey(spkBytes, getNetworkId());
     } catch(e2) {
       try {
-        p2shAddr = kaspa.addressFromScriptPublicKey({ version: 0, script: spkBytes }, 'mainnet');
+        p2shAddr = kaspa.addressFromScriptPublicKey({ version: 0, script: spkBytes }, getNetworkId());
       } catch(e3) {
         throw new Error('Cannot create P2SH address: ' + e3.message);
       }
@@ -1023,7 +1071,7 @@ async function fundCovenant(covenant) {
   const amount = covenant.params.amountKas;
   showLoading('Fetching UTXOs…');
   try {
-    const utxoRes = await fetch(`${API_BASE}/addresses/${wallet.address}/utxos`);
+    const utxoRes = await fetch(`${getApiBase()}/addresses/${wallet.address}/utxos`);
     const utxos = await utxoRes.json();
     if (!utxos || utxos.length === 0) { hideLoading(); showToast('No UTXOs available'); return; }
     hideLoading();
@@ -1034,7 +1082,7 @@ async function fundCovenant(covenant) {
         { k: 'To', v: covenant.covenantAddress.slice(0, 24) + '…' },
         { k: 'Amount', v: amount + ' KAS' },
         { k: 'Type', v: covenant.type },
-        { k: 'Network', v: 'Mainnet' }
+        { k: 'Network', v: NETWORKS[currentNetwork].label }
       ],
       onConfirm: async () => {
         showLoading('Signing & broadcasting…');
@@ -1043,7 +1091,7 @@ async function fundCovenant(covenant) {
           const amountSompi = BigInt(Math.round(amount * 100000000));
           const result = await kaspa.createTransactions({
             entries, outputs: [{ address: covenant.covenantAddress, amount: amountSompi }],
-            changeAddress: wallet.address, priorityFee: BigInt(5000), networkId: 'mainnet'
+            changeAddress: wallet.address, priorityFee: BigInt(5000), networkId: getNetworkId()
           });
           const tx = result.transactions[0].transaction;
           signTx(tx, wallet.privKey);
@@ -1078,16 +1126,81 @@ async function fundCovenant(covenant) {
   }
 }
 
-function renderCovenants() {
-  const html = covenants.map((c, i) => `
-    <div class="covenant-item" onclick="copyCovenantAddr('${c.covenantAddress}')">
-      <div class="type">${c.type.charAt(0).toUpperCase() + c.type.slice(1)} — ${c.params.amountKas} KAS ${c.funded ? '✅' : '⏳'}</div>
+async function renderCovenants() {
+  const currentDaa = await getCurrentDaa();
+  const html = covenants.map((c, i) => {
+    const funded = c.funded;
+    let statusClass = funded ? 'funded' : 'pending';
+    let statusText = funded ? '✅ Funded' : '⏳ Not funded';
+    let canUnlock = false;
+    let canSweep = false;
+    if (funded && c.type === 'timelock' && c.unlockDaa) {
+      if (currentDaa >= c.unlockDaa) {
+        statusText = '🔓 Unlockable';
+        statusClass = 'unlockable';
+        canUnlock = true;
+      } else {
+        statusText = '🔒 Locked (DAA ' + c.unlockDaa + ')';
+        statusClass = 'locked';
+      }
+    }
+    const actions = [];
+    if (canUnlock) actions.push('<button class="btn btn-primary" onclick="event.stopPropagation();sweepCovenant(' + i + ')">🔓 Sweep</button>');
+    if (funded && !canUnlock) actions.push('<button class="btn btn-secondary" onclick="event.stopPropagation();checkCovenantStatus(' + i + ')">Check Status</button>');
+    if (!funded) actions.push('<button class="btn btn-primary" onclick="event.stopPropagation();fundCovenant(covenants[' + i + '])">Fund</button>');
+    actions.push('<button class="btn btn-secondary" onclick="event.stopPropagation();showCovenantDetails(' + i + ')">Details</button>');
+    return `
+    <div class="covenant-item" onclick="showCovenantDetails(${i})">
+      <div class="type">${c.type.charAt(0).toUpperCase() + c.type.slice(1)} — ${c.params.amountKas} KAS</div>
       <div class="addr">${c.covenantAddress.slice(0, 30)}…</div>
-      <div class="amt">${c.description ? c.description.slice(0, 60) + '…' : ''}</div>
-    </div>`).join('');
+      <div class="status ${statusClass}">${statusText}</div>
+      ${actions.length ? '<div class="covenant-actions">' + actions.join('') + '</div>' : ''}
+    </div>`;
+  }).join('');
   const emptyHtml = '<div class="muted center" style="padding:12px;">No covenants yet</div>';
   document.getElementById('covenant-list').innerHTML = covenants.length ? html : emptyHtml;
   document.getElementById('covenant-list-page').innerHTML = covenants.length ? html : emptyHtml;
+}
+
+async function getCurrentDaa() {
+  try {
+    const res = await fetch(getApiBase() + '/info/blockdag');
+    const data = await res.json();
+    return Number(data.virtualDaaScore);
+  } catch { return 0; }
+}
+
+function checkCovenantStatus(i) {
+  const c = covenants[i];
+  if (c.unlockDaa) {
+    getCurrentDaa().then(daa => {
+      if (daa >= c.unlockDaa) {
+        showToast('🔓 Timelock expired! You can sweep now.');
+        renderCovenants();
+      } else {
+        const remaining = c.unlockDaa - daa;
+        const daysLeft = (remaining / DAA_PER_DAY).toFixed(2);
+        showToast('🔒 Still locked. ~' + daysLeft + ' days remaining (' + remaining + ' DAA blocks)');
+      }
+    });
+  }
+}
+
+function showCovenantDetails(i) {
+  const c = covenants[i];
+  const details = [
+    { k: 'Type', v: c.type.charAt(0).toUpperCase() + c.type.slice(1) },
+    { k: 'Amount', v: c.params.amountKas + ' KAS' },
+    { k: 'P2SH Address', v: c.covenantAddress },
+    { k: 'Redeem Script', v: c.redeemScriptHex },
+    { k: 'Funded', v: c.funded ? '✅ Yes' : '❌ No' },
+    { k: 'Network', v: NETWORKS[currentNetwork].label },
+  ];
+  if (c.unlockDaa) details.push({ k: 'Unlock DAA', v: c.unlockDaa });
+  if (c.timeoutDaa) details.push({ k: 'Timeout DAA', v: c.timeoutDaa });
+  if (c.fundTxId) details.push({ k: 'Fund TX', v: c.fundTxId.slice(0, 32) + '…' });
+  if (c.sweepTxId) details.push({ k: 'Sweep TX', v: c.sweepTxId.slice(0, 32) + '…' });
+  showReviewSheet({ title: 'Covenant Details', details, onConfirm: () => closeSheet(), confirmLabel: 'Close' });
 }
 function copyCovenantAddr(addr) {
   navigator.clipboard.writeText(addr).catch(() => {});
@@ -1203,6 +1316,247 @@ function parseIntentClientSide(text) {
   return null;
 }
 
+// ═══ Sweep Functions ═══
+
+async function sweepCovenant(covenantIndex) {
+  const covenant = covenants[covenantIndex];
+  if (!covenant || !covenant.funded) { showToast('Covenant not funded'); return; }
+  if (!wallet || !wallet.privKey) { showToast('No wallet loaded'); return; }
+  await initSDK();
+
+  showLoading('Fetching covenant UTXOs…');
+  try {
+    // Fetch UTXOs at the covenant P2SH address
+    const utxoRes = await fetch(getApiBase() + '/addresses/' + covenant.covenantAddress + '/utxos');
+    const utxos = await utxoRes.json();
+    if (!utxos || utxos.length === 0) {
+      hideLoading();
+      showToast('No UTXOs found at covenant address');
+      return;
+    }
+    hideLoading();
+
+    // For timelock: verify CLTV expired
+    if (covenant.type === 'timelock' && covenant.unlockDaa) {
+      const currentDaa = await getCurrentDaa();
+      if (currentDaa < covenant.unlockDaa) {
+        const remaining = covenant.unlockDaa - currentDaa;
+        showToast('Still locked. ~' + (remaining / DAA_PER_DAY).toFixed(2) + ' days remaining.');
+        return;
+      }
+    }
+
+    const totalAmount = utxos.reduce((s, u) => s + BigInt(u.utxoEntry.amount), 0n);
+    const totalKas = Number(totalAmount) / 1e8;
+    const FEE = 10_000_000n; // 0.1 KAS
+
+    // Ask where to sweep
+    showReviewSheet({
+      title: '🔓 Sweep Covenant',
+      details: [
+        { k: 'Type', v: covenant.type.charAt(0).toUpperCase() + covenant.type.slice(1) },
+        { k: 'Covenant', v: covenant.covenantAddress.slice(0, 24) + '…' },
+        { k: 'Available', v: totalKas.toFixed(4) + ' KAS' },
+        { k: 'Fee', v: '0.1 KAS' },
+        { k: 'You receive', v: (totalKas - 0.1).toFixed(4) + ' KAS' },
+        { k: 'Destination', v: wallet.address.slice(0, 24) + '… (your wallet)' },
+      ],
+      onConfirm: async () => {
+        showLoading('Building & signing sweep…');
+        try {
+          await sweepCovenantExecute(covenant, utxos, totalAmount, FEE);
+        } catch(e) {
+          hideLoading();
+          showToast('Sweep failed: ' + e.message);
+          console.error(e);
+        }
+      },
+      confirmLabel: 'Sweep Now'
+    });
+  } catch(e) {
+    hideLoading();
+    showToast('Error: ' + e.message);
+  }
+}
+
+async function sweepCovenantExecute(covenant, utxos, totalAmount, FEE) {
+  const destAddress = wallet.address;
+  const networkId = getNetworkId();
+
+  // Build the sweep transaction manually — we need custom scriptSig for covenant unlock
+  const tx = new kaspa.Transaction({ version: 1, lockTime: 0n, inputs: [], outputs: [] });
+  const netAmount = totalAmount - FEE;
+
+  // Build outputs — send everything to our wallet address
+  // Resolve destination SPK
+  let destSpk;
+  try {
+    const addr = kaspa.Address.fromString(destAddress);
+    destSpk = addr.getScriptPublicKey();
+  } catch(e) {
+    throw new Error('Cannot resolve destination address: ' + e.message);
+  }
+
+  tx.outputs.push({
+    value: netAmount,
+    scriptPublicKey: { version: 0, script: destSpk.script }
+  });
+
+  // Build inputs from covenant UTXOs
+  for (const u of utxos) {
+    const input = {
+      previousTransactionId: u.outpoint.transactionId,
+      previousTransactionOutputIndex: u.outpoint.index,
+      sequence: 0n,
+      sigOpCount: 1,
+      signatureScript: new Uint8Array(0),
+    };
+    tx.inputs.push(input);
+  }
+
+  // For timelock: the scriptSig needs <sig> <redeemScript>
+  // The Kaspa SDK's createInputSignature will handle the signing, but we need
+  // to provide the redeem script in the scriptSig
+  const redeemScriptHex = covenant.redeemScriptHex;
+  const redeemScriptBytes = hexToBytes(redeemScriptHex);
+
+  // Sign each input
+  const pk = pkFromHex(wallet.privKey);
+
+  for (let i = 0; i < tx.inputs.length; i++) {
+    // For P2SH timelock, we need to set the redeem script as part of the signing
+    // The SDK's createInputSignature signs with the P2PK script, but for covenants
+    // we need to sign with the redeem script
+
+    // Build the scriptSig: <sig> <redeemScript>
+    // First, get the signature using the redeem script
+    try {
+      // Try using the SDK's sign with custom script
+      const sig = kaspa.createInputSignature(tx, i, pk, 1, {
+        redeemScript: redeemScriptBytes
+      });
+      // Build scriptSig: push sig, then push redeemScript
+      const sigPush = pushData(sig);
+      const redeemPush = pushData(redeemScriptBytes);
+      tx.inputs[i].signatureScript = concatBytes([sigPush, redeemPush]);
+    } catch(signErr) {
+      // Fallback: manual Schnorr signature with BLAKE2B
+      console.warn('SDK signing failed, trying manual:', signErr.message);
+      // Get the sighash for this input
+      const sighash = kaspa.calcSignatureHash(tx, i, {
+        sigOpCount: 1,
+        redeemScript: redeemScriptBytes,
+      });
+      // Sign with Schnorr
+      const sig = kaspa.signHash(sighash, pk);
+      // Build scriptSig: <sig> <redeemScript>
+      const sigBytes = typeof sig === 'string' ? hexToBytes(sig) : sig;
+      const sigPush = pushData(sigBytes);
+      const redeemPush = pushData(redeemScriptBytes);
+      tx.inputs[i].signatureScript = concatBytes([sigPush, redeemPush]);
+    }
+  }
+
+  // Broadcast
+  const txId = await broadcastTx(tx);
+  hideLoading();
+  closeSheet();
+
+  // Mark covenant as swept
+  covenant.swept = true;
+  covenant.sweepTxId = txId;
+  saveCovenants();
+  renderCovenants();
+
+  showReviewSheet({
+    title: '✅ Sweep Successful',
+    details: [
+      { k: 'TX ID', v: (txId || '').slice(0, 32) + '…' },
+      { k: 'Amount', v: (Number(netAmount) / 1e8).toFixed(4) + ' KAS' },
+      { k: 'To', v: destAddress.slice(0, 24) + '…' },
+      { k: 'Network', v: NETWORKS[currentNetwork].label },
+    ],
+    onConfirm: () => { closeSheet(); refreshBalance(); fetchUTXOs(); },
+    confirmLabel: 'Done'
+  });
+}
+
+// Sweep ALL wallet funds to a destination address
+async function showSweepWallet() {
+  if (!wallet || !wallet.privKey) { showToast('No wallet loaded'); return; }
+  await initSDK();
+  showLoading('Fetching UTXOs…');
+  try {
+    const utxoRes = await fetch(getApiBase() + '/addresses/' + wallet.address + '/utxos');
+    const utxos = await utxoRes.json();
+    if (!utxos || utxos.length === 0) {
+      hideLoading();
+      showToast('No UTXOs to sweep');
+      return;
+    }
+    const totalAmount = utxos.reduce((s, u) => s + BigInt(u.utxoEntry.amount), 0n);
+    hideLoading();
+
+    // Prompt for destination
+    showReviewSheet({
+      title: '🧹 Sweep Wallet',
+      details: [
+        { k: 'From', v: wallet.address.slice(0, 24) + '…' },
+        { k: 'Available', v: (Number(totalAmount) / 1e8).toFixed(4) + ' KAS' },
+        { k: 'Fee', v: '~0.1 KAS' },
+      ],
+      onConfirm: async () => {
+        const dest = document.getElementById('sweep-dest')?.value?.trim() || '';
+        if (!dest || !dest.startsWith('kaspa:')) { showToast('Enter a valid destination address'); return; }
+        showLoading('Sweeping all funds…');
+        try {
+          const entries = buildUtxoEntries(utxos, wallet.address);
+          const FEE = 10_000_000n;
+          const netAmount = totalAmount - FEE;
+          const result = await kaspa.createTransactions({
+            entries,
+            outputs: [{ address: dest, amount: netAmount }],
+            changeAddress: dest, // no change — everything goes to dest
+            priorityFee: BigInt(5000),
+            networkId: getNetworkId()
+          });
+          const tx = result.transactions[0].transaction;
+          signTx(tx, wallet.privKey);
+          const txId = await broadcastTx(tx);
+          hideLoading();
+          closeSheet();
+          showReviewSheet({
+            title: '✅ Sweep Complete',
+            details: [
+              { k: 'TX ID', v: (txId || '').slice(0, 32) + '…' },
+              { k: 'Amount', v: (Number(netAmount) / 1e8).toFixed(4) + ' KAS' },
+              { k: 'To', v: dest.slice(0, 24) + '…' },
+            ],
+            onConfirm: () => { closeSheet(); refreshBalance(); fetchUTXOs(); },
+            confirmLabel: 'Done'
+          });
+        } catch(e) {
+          hideLoading();
+          showToast('Sweep failed: ' + e.message);
+        }
+      },
+      confirmLabel: 'Sweep All'
+    });
+
+    // Add destination input to the sheet body
+    setTimeout(() => {
+      const body = document.getElementById('sheet-body');
+      const inputDiv = document.createElement('div');
+      inputDiv.className = 'input-group mt-16';
+      inputDiv.innerHTML = '<label>Destination Address</label><input type="text" class="input-field" id="sweep-dest" placeholder="kaspa:qzx..." spellcheck="false">';
+      body.insertBefore(inputDiv, body.lastElementChild);
+    }, 50);
+  } catch(e) {
+    hideLoading();
+    showToast('Error: ' + e.message);
+  }
+}
+
 // ═══ Review Sheet ═══
 function showReviewSheet({ title, details, onConfirm, confirmLabel }) {
   const overlay = document.getElementById('sheet-overlay');
@@ -1226,6 +1580,7 @@ function closeSheet() { document.getElementById('sheet-overlay').classList.add('
 // ═══ Navigation ═══
 function navTo(tab) {
   currentTab = tab;
+  updateNetworkToggle();
   document.querySelectorAll('.tabbar .tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
   document.getElementById('page-onboarding').classList.add('hidden');
   document.getElementById('page-dashboard').classList.toggle('hidden', tab !== 'dashboard');
