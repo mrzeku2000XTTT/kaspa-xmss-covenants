@@ -1,0 +1,64 @@
+<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body>
+<pre id="log">Loading...</pre>
+<script type="module">
+const log = s => { document.getElementById('log').textContent += '\n' + s; console.log(s); };
+log('Starting SDK init test...');
+
+try {
+  log('Importing kaspa from esm.sh...');
+  const kaspa = await import('https://esm.sh/@onekeyfe/kaspa-wasm@1.0.2');
+  log('Imported. typeof default: ' + typeof kaspa.default);
+  log('typeof initSync: ' + typeof kaspa.initSync);
+  log('typeof PrivateKey: ' + typeof kaspa.PrivateKey);
+  log('typeof createAddress: ' + typeof kaspa.createAddress);
+
+  // Try calling default()
+  try {
+    log('Calling kaspa.default()...');
+    await kaspa.default();
+    log('SUCCESS: kaspa.default() completed!');
+    log('PrivateKey: ' + typeof kaspa.PrivateKey);
+    log('createAddress: ' + typeof kaspa.createAddress);
+  } catch(e) {
+    log('default() failed: ' + e.message);
+    
+    // Try with wasm_bg module
+    try {
+      log('Importing kaspa_bg.wasm.mjs directly...');
+      const bg = await import('https://esm.sh/@onekeyfe/kaspa-wasm@1.0.2/es2022/kaspa_bg.wasm.mjs');
+      log('typeof bg.default: ' + typeof bg.default);
+      if (typeof bg.default === 'function') {
+        log('Calling bg.default() (D function)...');
+        const g = bg.default();
+        log('g type: ' + typeof g + ', has onload: ' + typeof g?.onload + ', has exports: ' + typeof g?.exports);
+        if (g?.onload) {
+          log('Waiting for WASM to load via g.onload()...');
+          await new Promise((resolve, reject) => {
+            g.onload((err) => err ? reject(new Error(String(err))) : resolve());
+          });
+          log('WASM loaded! g.exports type: ' + typeof g.exports);
+          // Try initSync with g
+          try {
+            kaspa.initSync({ module: g });
+            log('initSync({module:g}) worked! PrivateKey: ' + typeof kaspa.PrivateKey);
+          } catch(e3) {
+            log('initSync({module:g}) failed: ' + e3.message);
+            // Try initSync without args
+            try {
+              kaspa.initSync();
+              log('initSync() worked! PrivateKey: ' + typeof kaspa.PrivateKey);
+            } catch(e4) {
+              log('initSync() failed: ' + e4.message);
+            }
+          }
+        }
+      }
+    } catch(e2) {
+      log('bg import failed: ' + e2.message);
+    }
+  }
+} catch(err) {
+  log('Import failed: ' + err.message);
+}
+</script>
+</body></html>
