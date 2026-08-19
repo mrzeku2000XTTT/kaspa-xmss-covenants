@@ -1498,24 +1498,35 @@ async function sendChat() {
   log.scrollTop = log.scrollHeight;
 
   try {
-    const res = await fetch(`${BACKEND_URL}/kccApi`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'parseIntent', message: text })
-    });
-    const result = await res.json();
+    let result = null;
+    try {
+      // Try backend AI parser first
+      const res = await fetch(`${BACKEND_URL}/kccApi`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'parseIntent', message: text })
+      });
+      if (res.ok) result = await res.json();
+    } catch {}
+
+    // Fallback: client-side regex parser (works offline, no backend needed)
+    if (!result || result.error) {
+      result = parseIntentClientSide(text);
+    }
+
     typing.remove();
 
-    if (result.error) {
+    if (!result || result.error) {
       const err = document.createElement('div');
       err.className = 'bubble ai';
-      err.textContent = 'Sorry, I couldn\'t parse that. Try something like: "Lock 5 KAS for 30 days", "Escrow 10 KAS for buyer at kaspa:...", or "Send 2 KAS to kaspa:..."';
+      err.textContent = 'Sorry, I couldn\'t parse that. Try: "Lock 5 KAS for 30 days", "Escrow 10 KAS for buyer at kaspa:...", or "Multisig 10 KAS with kaspa:..."';
       log.appendChild(err);
     } else {
       const ai = document.createElement('div');
       ai.className = 'bubble ai';
       const typeLabel = result.type === 'timelock' ? '⏰ Timelock' :
                         result.type === 'escrow' ? '🤝 Escrow' :
+                        result.type === 'multisig' ? '🔗 Multisig' :
                         result.type === 'send' ? '📤 Send' : result.type;
       ai.innerHTML = `
         I detected a <strong>${typeLabel}</strong> covenant.
@@ -1526,7 +1537,6 @@ async function sendChat() {
         </div>
       `;
       log.appendChild(ai);
-      // Store the covenant result globally and wire up the button
       window.__pendingCovenant = result;
       document.getElementById('accept-covenant-btn').onclick = () => acceptCovenant(window.__pendingCovenant);
     }
@@ -1535,9 +1545,40 @@ async function sendChat() {
     typing.remove();
     const err = document.createElement('div');
     err.className = 'bubble ai';
-    err.textContent = 'Connection error. Please try again.';
+    err.textContent = 'Error: ' + e.message;
     log.appendChild(err);
   }
+}
+
+/* Client-side intent parser — no backend needed. Handles the common patterns. */
+function parseIntentClientSide(text) {
+  const lower = text.toLowerCase().trim();
+
+  // Timelock: "lock 5 KAS for 30 days" or "lock 0.5 kas for 1 day"
+  const lockMatch = lower.match(/lock\s+([0-9]+\.?[0-9]*)\s+kas\s+for\s+([0-9]+\.?[0-9]*)\s+days?/);
+  if (lockMatch) {
+    return { type: 'timelock', params: { amountKas: parseFloat(lockMatch[1]), lockDays: parseFloat(lockMatch[2]) } };
+  }
+
+  // Escrow: "escrow 10 KAS for buyer at kaspa:..."
+  const escrowMatch = lower.match(/escrow\s+([0-9]+\.?[0-9]*)\s+kas\s+for\s+buyer\s+at\s+(kaspa:[a-z0-9]+)/);
+  if (escrowMatch) {
+    return { type: 'escrow', params: { amountKas: parseFloat(escrowMatch[1]), buyerAddress: escrowMatch[2], timeoutDays: 30 } };
+  }
+
+  // Multisig: "multisig 10 KAS with kaspa:..."
+  const multiMatch = lower.match(/multisig\s+([0-9]+\.?[0-9]*)\s+kas\s+with\s+(kaspa:[a-z0-9]+)/);
+  if (multiMatch) {
+    return { type: 'multisig', params: { amountKas: parseFloat(multiMatch[1]), counterparty: multiMatch[2] } };
+  }
+
+  // Send: "send 2 KAS to kaspa:..."
+  const sendMatch = lower.match(/send\s+([0-9]+\.?[0-9]*)\s+kas\s+to\s+(kaspa:[a-z0-9]+)/);
+  if (sendMatch) {
+    return { type: 'send', params: { amountKas: parseFloat(sendMatch[1]), destination: sendMatch[2] } };
+  }
+
+  return null;
 }
 
 async function acceptCovenant(covenant) {
