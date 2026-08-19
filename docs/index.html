@@ -285,6 +285,7 @@ let keyVisible = false;
 // ═══ Web Worker for Kaspa WASM SDK ═══
 const workerCode = `
 import * as kaspa from 'https://esm.sh/@onekeyfe/kaspa-wasm@1.0.2';
+import { blake2b } from 'https://esm.sh/@noble/hashes@1.3.3/blake2b';
 
 let _initialized = false;
 let _initPromise = null;
@@ -302,20 +303,75 @@ async function initSDK() {
   return _initPromise;
 }
 
-function makePrivateKey() {
-  // Try generate() first, then constructor with hex
-  if (typeof kaspa.PrivateKey.generate === 'function') {
-    return kaspa.PrivateKey.generate();
-  }
-  // Generate random hex
+function randomHexKey() {
   const arr = new Uint8Array(32);
   crypto.getRandomValues(arr);
-  const hex = Array.from(arr).map(b => b.toString(16).padStart(2,'0')).join('');
+  return Array.from(arr).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+function pkFromHex(hex) {
   return new kaspa.PrivateKey(hex);
 }
 
-function privateKeyFromHex(hex) {
-  return new kaspa.PrivateKey(hex);
+function hexToBytes(hex) {
+  const arr = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) arr[i/2] = parseInt(hex.slice(i, i+2), 16);
+  return arr;
+}
+
+function bytesToHex(bytes) {
+  return Array.from(bytes).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+function concatBytes(arrays) {
+  const total = arrays.reduce((n, a) => n + a.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const a of arrays) { out.set(a, off); off += a.length; }
+  return out;
+}
+
+// Script opcodes
+const OP_DUP=0x76, OP_DROP=0x75, OP_EQUAL=0x87, OP_IF=0x63, OP_ELSE=0x67, OP_ENDIF=0x68;
+const OP_0=0x00, OP_1=0x51, OP_CHECKSIG=0xac, OP_CLTV=0xb0;
+const OP_2=0x52, OP_CHECKMULTISIG=0xae;
+const DAA_PER_DAY = 864000;
+
+function scriptNum(n) {
+  if (n === 0) return new Uint8Array(0);
+  let abs = Math.abs(n), bytes = [];
+  while (abs > 0) { bytes.push(abs & 0xff); abs = Math.floor(abs / 256); }
+  if (bytes[bytes.length-1] & 0x80) bytes.push(0x00);
+  return new Uint8Array(bytes);
+}
+
+function pushData(buf) {
+  if (buf.length === 0) return new Uint8Array([0x00]);
+  if (buf.length <= 75) return new Uint8Array([buf.length, ...buf]);
+  throw new Error('push too large');
+}
+
+async function getRpcUrl() {
+  try {
+    const resolver = new kaspa.Resolver();
+    return await resolver.getUrl('borsh', 'mainnet');
+  } catch {
+    return 'wss://ivy.kaspa.green/kaspa/mainnet/wrpc/borsh';
+  }
+}
+
+async function broadcastTx(tx) {
+  const url = await getRpcUrl();
+  const rpc = new kaspa.RpcClient({ url, networkId: 'mainnet' });
+  await rpc.connect();
+  let txId;
+  try {
+    const r = await rpc.submitTransaction({ transaction: tx, allowOrphan: false });
+    txId = r.transactionId;
+  } finally {
+    await rpc.disconnect().catch(()=>{});
+  }
+  return txId;
 }
 
 self.onmessage = async (e) => {
@@ -325,18 +381,18 @@ self.onmessage = async (e) => {
 
     switch (action) {
       case 'generateWallet': {
-        const pk = makePrivateKey();
+        const hex = randomHexKey();
+        const pk = pkFromHex(hex);
         const addr = kaspa.createAddress(pk, 'mainnet');
-        const pkHex = pk.toString();
         self.postMessage({ id, ok: true, result: {
-          privKey: pkHex,
+          privKey: hex,
           address: addr.toString()
         }});
         break;
       }
 
       case 'importWallet': {
-        const pk = privateKeyFromHex(data.privKey);
+        const pk = pkFromHex(data.privKey);
         const addr = kaspa.createAddress(pk, 'mainnet');
         self.postMessage({ id, ok: true, result: {
           privKey: data.privKey,
@@ -347,9 +403,8 @@ self.onmessage = async (e) => {
 
       case 'sendKas': {
         const { dest, amountKas, utxos, changeAddress, privKeyHex } = data;
-        const pk = privateKeyFromHex(privKeyHex);
+        const pk = pkFromHex(privKeyHex);
 
-        // Build entries for createTransactions
         const entries = utxos.map(u => ({
           address: changeAddress,
           outpoint: { transactionId: u.outpoint.transactionId, index: u.outpoint.index },
@@ -370,186 +425,98 @@ self.onmessage = async (e) => {
 
         const tx = result.transactions[0].transaction;
 
-        // Sign all inputs
         for (let i = 0; i < tx.inputs.length; i++) {
           const sig = kaspa.createInputSignature(tx, i, pk, 1);
           tx.inputs[i].signatureScript = sig;
         }
 
-        // Broadcast
-        const rpc = new kaspa.RpcClient({
-          url: 'wss://rpc.kaspa.org/grpc/websocket',
-          networkId: 'mainnet'
-        });
-        await rpc.connect();
-        const txId = await rpc.submitTransaction({ transaction: tx, allowOrphan: false });
-        await rpc.disconnect();
-
-        self.postMessage({ id, ok: true, result: { txId: txId } });
+        const txId = await broadcastTx(tx);
+        self.postMessage({ id, ok: true, result: { txId } });
         break;
       }
 
       case 'computeCovenant': {
-        const { type, params, pubKeyHex, privKeyHex } = data;
-        const pk = privateKeyFromHex(privKeyHex);
+        const { type, params, pubKeyHex } = data;
+        const myPkX = hexToBytes(pubKeyHex);
 
-        // Use the SDK's BLAKE2B for hashing
-        const blake2b = kaspa.blake2b || (kaspa.hashes && kaspa.hashes.blake2b);
-        // If SDK doesn't export blake2b directly, use Web Crypto SHA-256 as fallback
-        // (Kaspa uses BLAKE2B-256 for P2SH, so we need the real one)
-        // Actually, the SDK exports KaspaHashes which has blake2b
-        let hashFn;
-        if (kaspa.KaspaHashes && kaspa.KaspaHashes.blake2b) {
-          hashFn = (data) => kaspa.KaspaHashes.blake2b(data, { dkLen: 32 });
-        } else {
-          // Use @noble/hashes in the worker
-          const { blake2b: nobleBlake2b } = await import('https://esm.sh/@noble/hashes@1.3.3/blake2b');
-          hashFn = (data) => nobleBlake2b(data, { dkLen: 32 });
-        }
-
-        // Script opcodes
-        const OP_DUP=0x76, OP_DROP=0x75, OP_EQUAL=0x87, OP_IF=0x63, OP_ELSE=0x67, OP_ENDIF=0x68;
-        const OP_0=0x00, OP_1=0x51, OP_CHECKSIG=0xac, OP_CLTV=0xb0;
-        const OP_2=0x52, OP_CHECKMULTISIG=0xae;
-        const DAA_PER_DAY = 864000;
-
-        function scriptNum(n) {
-          if (n === 0) return new Uint8Array(0);
-          let abs = Math.abs(n), bytes = [];
-          while (abs > 0) { bytes.push(abs & 0xff); abs = Math.floor(abs / 256); }
-          if (bytes[bytes.length-1] & 0x80) bytes.push(0x00);
-          return new Uint8Array(bytes);
-        }
-
-        function pushData(buf) {
-          if (buf.length === 0) return new Uint8Array([0x00]);
-          if (buf.length <= 75) return new Uint8Array([buf.length, ...buf]);
-          throw new Error('push too large');
-        }
-
-        function concat(arrays) {
-          const total = arrays.reduce((n, a) => n + a.length, 0);
-          const out = new Uint8Array(total);
-          let off = 0;
-          for (const a of arrays) { out.set(a, off); off += a.length; }
-          return out;
-        }
-
-        function hexToBytes(hex) {
-          const arr = new Uint8Array(hex.length / 2);
-          for (let i = 0; i < hex.length; i += 2) arr[i/2] = parseInt(hex.slice(i, i+2), 16);
-          return arr;
-        }
-
-        function bytesToHex(bytes) {
-          return Array.from(bytes).map(b => b.toString(16).padStart(2,'0')).join('');
-        }
-
-        // Cashaddr encode for P2SH (version 8)
-        // We use the SDK's createAddress with a script instead
-        // Actually, we can compute P2SH address using the SDK
-        // For now, use the same cashaddr approach
-
-        // Fetch current DAA score
         const daaRes = await fetch('https://api.kaspa.org/info/blockdag');
         const daaData = await daaRes.json();
-        const currentDaa = Number(data.currentDaa || daaData.virtualDaaScore);
+        const currentDaa = Number(daaData.virtualDaaScore);
 
         let redeemScript;
 
         if (type === 'timelock') {
           const lockDays = params.lockDays || 1;
           const unlockDaa = currentDaa + Math.max(1, Math.round(lockDays * DAA_PER_DAY));
-          const pubKeyBytes = hexToBytes(pubKeyHex);
-          redeemScript = concat([
+          redeemScript = concatBytes([
             pushData(scriptNum(unlockDaa)), new Uint8Array([OP_CLTV]),
-            pushData(pubKeyBytes), new Uint8Array([OP_CHECKSIG])
+            pushData(myPkX), new Uint8Array([OP_CHECKSIG])
           ]);
-          const scriptHash = hashFn(redeemScript);
-          // P2SH scriptPubKey: OP_BLAKE2B(0xaa) OP_PUSH32(0x20) <hash> OP_EQUAL(0x87)
-          const spk = new Uint8Array([0xaa, 0x20, ...scriptHash, 0x87]);
-
-          // Use SDK to get P2SH address
-          // createAddress from script hash
-          const p2shAddr = kaspa.createAddressFromScriptHash(scriptHash, 'mainnet');
-
-          self.postMessage({ id, ok: true, result: {
-            covenantAddress: p2shAddr.toString(),
-            redeemScriptHex: bytesToHex(redeemScript),
-            scriptPubKeyHex: bytesToHex(spk),
-            unlockDaa,
-            description: 'Locked until DAA ' + unlockDaa + ' (~' + new Date(Date.now() + lockDays * 86400000).toDateString() + '). Only your key can release it after that block.'
-          }});
-          break;
-        }
-
-        if (type === 'escrow') {
-          // Decode buyer address to pubkey
-          const buyerAddr = kaspa.Address.fromString(params.buyerAddress);
-          const buyerPkX = buyerAddr.payload; // 32-byte x-only pubkey
-          const sellerPkX = hexToBytes(pubKeyHex);
-          const arbiterPkX = params.arbiterAddress
-            ? kaspa.Address.fromString(params.arbiterAddress).payload
-            : sellerPkX;
+        } else if (type === 'escrow') {
+          const buyerPkX = hexToBytes(data.buyerPubKeyHex);
+          const arbiterPkX = data.arbiterPubKeyHex ? hexToBytes(data.arbiterPubKeyHex) : myPkX;
           const timeoutDays = params.timeoutDays || 30;
           const timeoutDaa = currentDaa + Math.round(timeoutDays * DAA_PER_DAY);
-
-          redeemScript = concat([
+          redeemScript = concatBytes([
             new Uint8Array([OP_DUP, OP_0, OP_EQUAL, OP_IF]),
               new Uint8Array([OP_DROP]), pushData(arbiterPkX), new Uint8Array([OP_CHECKSIG]),
             new Uint8Array([OP_ELSE, OP_DUP, OP_1, OP_EQUAL, OP_IF]),
               new Uint8Array([OP_DROP]), pushData(scriptNum(timeoutDaa)), new Uint8Array([OP_CLTV]),
-              pushData(sellerPkX), new Uint8Array([OP_CHECKSIG]),
+              pushData(myPkX), new Uint8Array([OP_CHECKSIG]),
             new Uint8Array([OP_ELSE]),
               new Uint8Array([OP_DROP]), pushData(scriptNum(timeoutDaa)), new Uint8Array([OP_CLTV]),
               pushData(buyerPkX), new Uint8Array([OP_CHECKSIG]),
             new Uint8Array([OP_ENDIF, OP_ENDIF])
           ]);
-
-          const scriptHash = hashFn(redeemScript);
-          const spk = new Uint8Array([0xaa, 0x20, ...scriptHash, 0x87]);
-          const p2shAddr = kaspa.createAddressFromScriptHash(scriptHash, 'mainnet');
-
-          self.postMessage({ id, ok: true, result: {
-            covenantAddress: p2shAddr.toString(),
-            redeemScriptHex: bytesToHex(redeemScript),
-            scriptPubKeyHex: bytesToHex(spk),
-            timeoutDaa,
-            description: 'Escrow: arbiter can release anytime; after DAA ' + timeoutDaa + ', seller or buyer can reclaim.'
-          }});
-          break;
-        }
-
-        if (type === 'multisig') {
-          const cpAddr = kaspa.Address.fromString(params.counterparty);
-          const cpPkX = cpAddr.payload;
-          const myPkX = hexToBytes(pubKeyHex);
-
-          redeemScript = concat([
+        } else if (type === 'multisig') {
+          const cpPkX = hexToBytes(data.counterpartyPubKeyHex);
+          redeemScript = concatBytes([
             new Uint8Array([OP_2]),
             pushData(myPkX), pushData(cpPkX),
             new Uint8Array([OP_2, OP_CHECKMULTISIG])
           ]);
-
-          const scriptHash = hashFn(redeemScript);
-          const spk = new Uint8Array([0xaa, 0x20, ...scriptHash, 0x87]);
-          const p2shAddr = kaspa.createAddressFromScriptHash(scriptHash, 'mainnet');
-
-          self.postMessage({ id, ok: true, result: {
-            covenantAddress: p2shAddr.toString(),
-            redeemScriptHex: bytesToHex(redeemScript),
-            scriptPubKeyHex: bytesToHex(spk),
-            description: '2-of-2 multisig: both you and the counterparty must sign to spend.'
-          }});
-          break;
+        } else {
+          throw new Error('Unknown covenant type: ' + type);
         }
 
-        throw new Error('Unknown covenant type: ' + type);
+        // Hash the redeem script with BLAKE2B-256
+        const scriptHash = blake2b(redeemScript, { dkLen: 32 });
+        // P2SH scriptPubKey: OP_BLAKE2B(0xaa) OP_PUSH32(0x20) <hash> OP_EQUAL(0x87)
+        const spkBytes = new Uint8Array([0xaa, 0x20, ...scriptHash, 0x87]);
+        // Create P2SH address using SDK
+        const spk = new kaspa.ScriptPublicKey(0, spkBytes);
+        const p2shAddr = kaspa.addressFromScriptPublicKey(spk, 'mainnet');
+
+        // Build description
+        let description = '';
+        let extraData = {};
+        if (type === 'timelock') {
+          const lockDays = params.lockDays || 1;
+          const unlockDaa = currentDaa + Math.max(1, Math.round(lockDays * DAA_PER_DAY));
+          description = 'Locked until DAA ' + unlockDaa + '. Only your key can release it after that block.';
+          extraData = { unlockDaa };
+        } else if (type === 'escrow') {
+          const timeoutDays = params.timeoutDays || 30;
+          const timeoutDaa = currentDaa + Math.round(timeoutDays * DAA_PER_DAY);
+          description = 'Escrow: arbiter can release anytime; after DAA ' + timeoutDaa + ', seller or buyer can reclaim.';
+          extraData = { timeoutDaa };
+        } else if (type === 'multisig') {
+          description = '2-of-2 multisig: both you and the counterparty must sign to spend.';
+        }
+
+        self.postMessage({ id, ok: true, result: {
+          covenantAddress: p2shAddr.toString(),
+          redeemScriptHex: bytesToHex(redeemScript),
+          scriptPubKeyHex: bytesToHex(spkBytes),
+          description,
+          ...extraData
+        }});
+        break;
       }
 
       case 'fundCovenant': {
-        const { covenantAddress, amountKas, utxos, changeAddress, privKeyHex, scriptPubKeyHex } = data;
-        const pk = privateKeyFromHex(privKeyHex);
+        const { covenantAddress, amountKas, utxos, changeAddress, privKeyHex } = data;
+        const pk = pkFromHex(privKeyHex);
 
         const entries = utxos.map(u => ({
           address: changeAddress,
@@ -570,20 +537,12 @@ self.onmessage = async (e) => {
         });
 
         const tx = result.transactions[0].transaction;
-
         for (let i = 0; i < tx.inputs.length; i++) {
           const sig = kaspa.createInputSignature(tx, i, pk, 1);
           tx.inputs[i].signatureScript = sig;
         }
 
-        const rpc = new kaspa.RpcClient({
-          url: 'wss://rpc.kaspa.org/grpc/websocket',
-          networkId: 'mainnet'
-        });
-        await rpc.connect();
-        const txId = await rpc.submitTransaction({ transaction: tx, allowOrphan: false });
-        await rpc.disconnect();
-
+        const txId = await broadcastTx(tx);
         self.postMessage({ id, ok: true, result: { txId } });
         break;
       }
@@ -594,8 +553,7 @@ self.onmessage = async (e) => {
   } catch (err) {
     self.postMessage({ id, ok: false, error: err.message, stack: err.stack });
   }
-};
-`;
+};`;
 
 // Create worker from blob
 const workerBlob = new Blob([workerCode], { type: 'application/javascript' });
@@ -908,21 +866,34 @@ function updateManualForm(type) {
 async function buildManualCovenant() {
   const type = document.querySelector('.seg.active').dataset.type;
   let params = {};
+  let extraData = {};
   if (type === 'timelock') {
     params = { amountKas: parseFloat(document.getElementById('ct-amount').value), lockDays: parseFloat(document.getElementById('ct-days').value) };
     if (!params.amountKas || !params.lockDays) { showToast('Fill all fields'); return; }
   } else if (type === 'escrow') {
     params = { amountKas: parseFloat(document.getElementById('ct-amount').value), buyerAddress: document.getElementById('ct-buyer').value.trim(), arbiterAddress: document.getElementById('ct-arb') ? document.getElementById('ct-arb').value.trim() : '', timeoutDays: 30 };
     if (!params.amountKas || !params.buyerAddress) { showToast('Fill required fields'); return; }
+    // Extract pubkey hex from buyer address
+    const buyerPk = pubkeyXFromAddress(params.buyerAddress);
+    if (!buyerPk) { showToast('Buyer address must be a P2PK address (kaspa:qzx...)'); return; }
+    extraData.buyerPubKeyHex = buyerPk;
+    if (params.arbiterAddress) {
+      const arbPk = pubkeyXFromAddress(params.arbiterAddress);
+      if (!arbPk) { showToast('Arbitrator address must be P2PK'); return; }
+      extraData.arbiterPubKeyHex = arbPk;
+    }
   } else if (type === 'multisig') {
     params = { amountKas: parseFloat(document.getElementById('ct-amount').value), counterparty: document.getElementById('ct-counterparty').value.trim() };
     if (!params.amountKas || !params.counterparty) { showToast('Fill all fields'); return; }
+    const cpPk = pubkeyXFromAddress(params.counterparty);
+    if (!cpPk) { showToast('Counterparty address must be a P2PK address (kaspa:qzx...)'); return; }
+    extraData.counterpartyPubKeyHex = cpPk;
   }
   if (!wallet || !wallet.pubKey) { showToast('Create or import a wallet first'); return; }
 
   showLoading('Computing covenant…');
   try {
-    const result = await workerCall('computeCovenant', { type, params, pubKeyHex: wallet.pubKey, privKeyHex: wallet.privKey });
+    const result = await workerCall('computeCovenant', { type, params, pubKeyHex: wallet.pubKey, ...extraData });
     hideLoading();
     showCovenantReview(type, params, result);
   } catch(e) {
@@ -959,8 +930,7 @@ function showCovenantReview(type, params, result) {
           amountKas: params.amountKas,
           utxos,
           changeAddress: wallet.address,
-          privKeyHex: wallet.privKey,
-          scriptPubKeyHex: result.scriptPubKeyHex
+          privKeyHex: wallet.privKey
         });
 
         hideLoading();
@@ -1040,9 +1010,23 @@ async function sendChat() {
     log.appendChild(ai);
     document.getElementById('accept-cov-btn').onclick = async () => {
       if (!wallet || !wallet.pubKey) { showToast('Create or import a wallet first'); return; }
+      // Extract pubkeys if needed
+      let extraData = {};
+      if (result.type === 'escrow' && result.params.buyerAddress) {
+        const pk = pubkeyXFromAddress(result.params.buyerAddress);
+        if (!pk) { showToast('Buyer address must be P2PK'); return; }
+        extraData.buyerPubKeyHex = pk;
+        if (result.params.arbiterAddress) {
+          extraData.arbiterPubKeyHex = pubkeyXFromAddress(result.params.arbiterAddress);
+        }
+      } else if (result.type === 'multisig' && result.params.counterparty) {
+        const pk = pubkeyXFromAddress(result.params.counterparty);
+        if (!pk) { showToast('Counterparty address must be P2PK'); return; }
+        extraData.counterpartyPubKeyHex = pk;
+      }
       showLoading('Computing covenant…');
       try {
-        const covResult = await workerCall('computeCovenant', { type: result.type, params: result.params, pubKeyHex: wallet.pubKey, privKeyHex: wallet.privKey });
+        const covResult = await workerCall('computeCovenant', { type: result.type, params: result.params, pubKeyHex: wallet.pubKey, ...extraData });
         hideLoading();
         showCovenantReview(result.type, result.params, covResult);
       } catch(e) { hideLoading(); showToast('Error: ' + e.message); }
