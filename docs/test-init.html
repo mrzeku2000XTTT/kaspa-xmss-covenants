@@ -2,63 +2,84 @@
 <pre id="log">Loading...</pre>
 <script type="module">
 const log = s => { document.getElementById('log').textContent += '\n' + s; console.log(s); };
-log('Starting SDK init test...');
 
 try {
-  log('Importing kaspa from esm.sh...');
+  log('Importing kaspa + bg...');
   const kaspa = await import('https://esm.sh/@onekeyfe/kaspa-wasm@1.0.2');
-  log('Imported. typeof default: ' + typeof kaspa.default);
-  log('typeof initSync: ' + typeof kaspa.initSync);
-  log('typeof PrivateKey: ' + typeof kaspa.PrivateKey);
-  log('typeof createAddress: ' + typeof kaspa.createAddress);
+  const bg = await import('https://esm.sh/@onekeyfe/kaspa-wasm@1.0.2/es2022/kaspa_bg.wasm.mjs');
+  log('Both imported. bg.default type: ' + typeof bg.default);
 
-  // Try calling default()
-  try {
-    log('Calling kaspa.default()...');
-    await kaspa.default();
-    log('SUCCESS: kaspa.default() completed!');
-    log('PrivateKey: ' + typeof kaspa.PrivateKey);
-    log('createAddress: ' + typeof kaspa.createAddress);
-  } catch(e) {
-    log('default() failed: ' + e.message);
-    
-    // Try with wasm_bg module
+  // Call D() to get g object
+  const g = bg.default();
+  log('g.exports type (before wait): ' + typeof g.exports);
+
+  // Check if exports already loaded
+  if (g.exports) {
+    log('Exports already available!');
     try {
-      log('Importing kaspa_bg.wasm.mjs directly...');
-      const bg = await import('https://esm.sh/@onekeyfe/kaspa-wasm@1.0.2/es2022/kaspa_bg.wasm.mjs');
-      log('typeof bg.default: ' + typeof bg.default);
-      if (typeof bg.default === 'function') {
-        log('Calling bg.default() (D function)...');
-        const g = bg.default();
-        log('g type: ' + typeof g + ', has onload: ' + typeof g?.onload + ', has exports: ' + typeof g?.exports);
-        if (g?.onload) {
-          log('Waiting for WASM to load via g.onload()...');
-          await new Promise((resolve, reject) => {
-            g.onload((err) => err ? reject(new Error(String(err))) : resolve());
-          });
-          log('WASM loaded! g.exports type: ' + typeof g.exports);
-          // Try initSync with g
-          try {
-            kaspa.initSync({ module: g });
-            log('initSync({module:g}) worked! PrivateKey: ' + typeof kaspa.PrivateKey);
-          } catch(e3) {
-            log('initSync({module:g}) failed: ' + e3.message);
-            // Try initSync without args
-            try {
-              kaspa.initSync();
-              log('initSync() worked! PrivateKey: ' + typeof kaspa.PrivateKey);
-            } catch(e4) {
-              log('initSync() failed: ' + e4.message);
-            }
-          }
-        }
-      }
-    } catch(e2) {
-      log('bg import failed: ' + e2.message);
+      kaspa.initSync({ module: g });
+      log('initSync({module:g}) worked! PrivateKey: ' + typeof kaspa.PrivateKey);
+      // Try generating a key
+      const pk = new kaspa.PrivateKey('a'.repeat(64));
+      log('PrivateKey created: ' + typeof pk);
+      const addr = kaspa.createAddress(pk, 'mainnet');
+      log('Address: ' + addr.toString());
+    } catch(e) {
+      log('initSync failed: ' + e.message);
+    }
+  } else {
+    log('Exports null, waiting for onload...');
+    // Try with proper imports
+    try {
+      await new Promise((resolve, reject) => {
+        g.onload((err) => err ? reject(new Error(String(err))) : resolve());
+      });
+      log('WASM loaded! exports: ' + typeof g.exports);
+      kaspa.initSync({ module: g });
+      log('initSync worked after onload!');
+    } catch(e) {
+      log('onload failed: ' + e.message);
     }
   }
 } catch(err) {
-  log('Import failed: ' + err.message);
+  log('Error: ' + err.message);
+}
+
+// Approach 2: fetch raw WASM and try initSync with instance
+log('\n--- Approach 2: fetch WASM + initSync with instance ---');
+try {
+  log('Fetching raw WASM from unpkg...');
+  const wasmRes = await fetch('https://unpkg.com/@onekeyfe/kaspa-wasm@1.0.2/kaspa_bg.wasm.bin');
+  const wasmBytes = await wasmRes.arrayBuffer();
+  log('Got ' + wasmBytes.byteLength + ' bytes');
+  
+  // Get imports from kaspa module
+  const kaspa2 = await import('https://esm.sh/@onekeyfe/kaspa-wasm@1.0.2');
+  
+  // Try to find the imports function
+  log('Looking for imports...');
+  // The initSync function might accept { module: WebAssembly.Instance }
+  const wasmModule = await WebAssembly.compile(wasmBytes);
+  log('Compiled WASM module');
+  
+  // Try initSync with pre-compiled module
+  try {
+    kaspa2.initSync({ module: wasmModule });
+    log('initSync with compiled module worked! PrivateKey: ' + typeof kaspa2.PrivateKey);
+  } catch(e) {
+    log('initSync with module failed: ' + e.message);
+    // Try with instance
+    try {
+      // Need imports - try passing undefined
+      // Actually, let's try just calling initSync with no args
+      kaspa2.initSync();
+      log('initSync() no args worked!');
+    } catch(e2) {
+      log('initSync() failed: ' + e2.message);
+    }
+  }
+} catch(err) {
+  log('Approach 2 error: ' + err.message);
 }
 </script>
 </body></html>
