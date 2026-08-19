@@ -1107,6 +1107,7 @@ async function init() {
   loadCovenants();
 
   // Wait a moment for worker to start, then hide loading
+  updateManualForm('timelock');
   setTimeout(() => {
     hideLoading();
     if (loadWallet()) {
