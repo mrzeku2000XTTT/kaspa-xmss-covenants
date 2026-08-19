@@ -280,6 +280,7 @@ textarea.input-field { resize: vertical; min-height: 60px; font-family: monospac
 // ════════════════════════════════════════════════════════════════
 
 const API_BASE = 'https://api.kaspa.org';
+const AI_ENDPOINT = 'https://superagent-c8d6f2a6.base44.app/functions/covenantIntentAI';
 const KASPA_PRICE_API = 'https://api.coingecko.com/api/v3/simple/price?ids=kaspa&vs_currencies=usd';
 const DAA_PER_DAY = 864000;
 
@@ -1105,11 +1106,19 @@ async function sendChat() {
   userMsg.textContent = text;
   log.appendChild(userMsg);
 
-  const result = parseIntentClientSide(text);
-  if (!result) {
+  const thinking = document.createElement('div');
+  thinking.className = 'bubble ai';
+  thinking.textContent = 'Thinking…';
+  log.appendChild(thinking);
+  log.scrollTop = log.scrollHeight;
+
+  const result = await parseIntentAI(text);
+  thinking.remove();
+
+  if (!result || result.type === 'unknown') {
     const ai = document.createElement('div');
     ai.className = 'bubble ai';
-    ai.textContent = "Sorry, I couldn't parse that. Try: \"Lock 5 KAS for 30 days\", \"Escrow 10 KAS for buyer at kaspa:...\", or \"Multisig 10 KAS with kaspa:...\"";
+    ai.textContent = (result && result.reply) || "Sorry, I couldn't parse that. Try: \"Lock 5 KAS for 30 days\", \"Escrow 10 KAS for buyer at kaspa:...\", or \"Multisig 10 KAS with kaspa:...\"";
     log.appendChild(ai);
   } else if (result.type === 'send') {
     const ai = document.createElement('div');
@@ -1123,7 +1132,8 @@ async function sendChat() {
     const typeLabel = result.type === 'timelock' ? '⏰ Timelock' : result.type === 'escrow' ? '🤝 Escrow' : result.type === 'multisig' ? '🔗 Multisig' : result.type;
     const ai = document.createElement('div');
     ai.className = 'bubble ai';
-    ai.innerHTML = `Detected a <strong>${typeLabel}</strong>. <div class="suggestion"><h4>${typeLabel}</h4><p>${JSON.stringify(result.params)}</p><button class="btn btn-primary" style="padding:10px;" id="accept-cov-btn">Build & Review</button></div>`;
+    const introText = result.reply || `Detected a ${typeLabel}.`;
+    ai.innerHTML = `${introText} <div class="suggestion"><h4>${typeLabel}</h4><p>${JSON.stringify(result.params)}</p><button class="btn btn-primary" style="padding:10px;" id="accept-cov-btn">Build & Review</button></div>`;
     log.appendChild(ai);
     document.getElementById('accept-cov-btn').onclick = async () => {
       if (!wallet || !wallet.pubKey) { showToast('Create or import a wallet first'); return; }
@@ -1150,6 +1160,34 @@ async function sendChat() {
     };
   }
   log.scrollTop = log.scrollHeight;
+}
+
+async function parseIntentAI(text) {
+  try {
+    const res = await fetch(AI_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) throw new Error('AI endpoint returned ' + res.status);
+    const data = await res.json();
+    if (!data.ok || !data.intent) throw new Error(data.error || 'AI parse failed');
+    const intent = data.intent;
+    const clean = v => (v === undefined || v === null || v === '' || v === 'null') ? undefined : v;
+    const type = intent.type || 'unknown';
+    let params = {};
+    if (type === 'timelock') params = { amountKas: clean(intent.amountKas), lockDays: clean(intent.lockDays) };
+    else if (type === 'escrow') params = { amountKas: clean(intent.amountKas), buyerAddress: clean(intent.buyerAddress), arbiterAddress: clean(intent.arbiterAddress), timeoutDays: clean(intent.timeoutDays) };
+    else if (type === 'multisig') params = { amountKas: clean(intent.amountKas), counterparty: clean(intent.counterparty) };
+    else if (type === 'send') params = { amountKas: clean(intent.amountKas), destination: clean(intent.destination) };
+    if (type !== 'unknown' && !clean(params.amountKas)) return { type: 'unknown', reply: intent.reply || 'I need a KAS amount to continue. Try: "Lock 5 KAS for 30 days".' };
+    return { type, params, reply: intent.reply };
+  } catch (e) {
+    console.error('AI parse failed, falling back to client-side parser:', e);
+    const fallback = parseIntentClientSide(text);
+    if (!fallback) return { type: 'unknown', reply: null };
+    return { ...fallback, reply: null };
+  }
 }
 
 function parseIntentClientSide(text) {
