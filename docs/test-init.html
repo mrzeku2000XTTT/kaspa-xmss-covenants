@@ -6,27 +6,51 @@ try {
   const kaspa = await import('https://esm.sh/@onekeyfe/kaspa-wasm@1.0.2?bundle');
   await kaspa.default();
   log('SDK ready');
-  // Check NetworkId
-  log('NetworkId: ' + JSON.stringify(kaspa.NetworkId));
-  log('NetworkId keys: ' + Object.keys(kaspa.NetworkId || {}).join(', '));
-  log('NetworkType: ' + JSON.stringify(kaspa.NetworkType));
-  // Try createAddress with string
   const arr = new Uint8Array(32); crypto.getRandomValues(arr);
   const hex = Array.from(arr).map(b=>b.toString(16).padStart(2,'0')).join('');
   const pk = new kaspa.PrivateKey(hex);
-  log('PK created: ' + typeof pk);
+  log('PK: ' + typeof pk + ' methods: ' + Object.getOwnPropertyNames(Object.getPrototypeOf(pk)).join(','));
+  
+  // Try toPublicKey
   try {
-    const addr1 = kaspa.createAddress(pk, 'mainnet');
-    log('addr1 (string): ' + addr1.toString());
-  } catch(e1) { log('createAddress string err: ' + e1.message); }
-  try {
-    const addr2 = kaspa.createAddress(pk, kaspa.NetworkId.Mainnet);
-    log('addr2 (NetworkId.Mainnet): ' + addr2.toString());
-  } catch(e2) { log('createAddress NetworkId err: ' + e2.message); }
+    const pub = pk.toPublicKey();
+    log('pubKey: ' + typeof pub);
+    try { log('pubKey.toXOnly: ' + typeof pub.toXOnly); } catch(e){}
+    try {
+      const addr = new kaspa.Address(pub, 'mainnet');
+      log('Address(pub,"mainnet"): ' + addr.toString());
+    } catch(e) { log('Address err: ' + e.message); }
+    try {
+      const addr = new kaspa.Address(pub, 0);
+      log('Address(pub,0): ' + addr.toString());
+    } catch(e) { log('Address(pub,0) err: ' + e.message); }
+    try {
+      const xonly = pub.toXOnlyPublicKey();
+      const addr2 = new kaspa.Address(xonly, 'mainnet');
+      log('Address(xonly,"mainnet"): ' + addr2.toString());
+    } catch(e) { log('xonly err: ' + e.message); }
+  } catch(e) { log('toPublicKey err: ' + e.message); }
+
+  // Try Keypair more carefully
   try {
     const kp = new kaspa.Keypair(pk, 'mainnet');
-    log('Keypair addr: ' + kp.address.toString());
-  } catch(e3) { log('Keypair err: ' + e3.message); }
-} catch(e) { log('Error: ' + e.message + '\n' + e.stack); }
+    log('Keypair: ' + typeof kp + ' props: ' + Object.getOwnPropertyNames(Object.getPrototypeOf(kp)).join(','));
+    try { log('kp.address: ' + typeof kp.address); } catch(e){}
+    try { log('kp.getAddress(): ' + kp.getAddress()); } catch(e) { log('getAddress err: ' + e.message); }
+    try { log('kp.publicKey: ' + typeof kp.publicKey); } catch(e){}
+  } catch(e) { log('Keypair err: ' + e.message); }
+
+  // Try createAddress with numeric
+  try { log('createAddress(pk,0): ' + kaspa.createAddress(pk, 0).toString()); } catch(e) { log('ca0 err: ' + e.message); }
+  try { log('createAddress(pk,kaspa.NetworkType.Mainnet): ' + kaspa.createAddress(pk, kaspa.NetworkType.Mainnet).toString()); } catch(e) { log('caNT err: ' + e.message); }
+  // Check Generator
+  try {
+    log('Generator: ' + typeof kaspa.Generator);
+    const gen = new kaspa.Generator('mainnet');
+    log('Generator created');
+    const addr3 = gen.generateAddress(pk);
+    log('gen.generateAddress: ' + addr3.toString());
+  } catch(e) { log('Generator err: ' + e.message); }
+} catch(e) { log('Error: ' + e.message); }
 </script>
 </body></html>
