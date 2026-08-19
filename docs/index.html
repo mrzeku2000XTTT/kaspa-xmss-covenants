@@ -1060,6 +1060,28 @@ async function fundCovenant(type, params, result) {
 }
 
 /* ═══ AI Chat ═══ */
+// Backend parser only recognizes whole-number "days" durations.
+// Normalize minutes/hours/weeks (and stray duplicate unit words like
+// "30 minutes days") into an equivalent days value before sending.
+function normalizeDurationForParser(text) {
+  const unitMult = {
+    min: 1/1440, mins: 1/1440, minute: 1/1440, minutes: 1/1440,
+    hr: 1/24, hrs: 1/24, hour: 1/24, hours: 1/24,
+    day: 1, days: 1,
+    week: 7, weeks: 7
+  };
+  const unitWord = '(?:min(?:ute)?s?|hrs?|hours?|days?|weeks?)';
+  const re = new RegExp(`(\\d+(?:\\.\\d+)?)\\s*(${unitWord})\\b(?:\\s+${unitWord}\\b)*`, 'i');
+  const m = text.match(re);
+  if (!m) return text;
+  const num = parseFloat(m[1]);
+  const unit = m[2].toLowerCase();
+  const mult = unitMult[unit] ?? 1;
+  let days = Math.round(num * mult * 10000) / 10000;
+  if (days <= 0) days = 0.0007; // ~1 minute floor so it never rounds to zero
+  return text.slice(0, m.index) + `${days} days` + text.slice(m.index + m[0].length);
+}
+
 async function sendChat() {
   const input = document.getElementById('chat-input');
   const text = input.value.trim();
@@ -1079,11 +1101,13 @@ async function sendChat() {
   log.appendChild(typing);
   log.scrollTop = log.scrollHeight;
 
+  const normalizedText = normalizeDurationForParser(text);
+
   try {
     const res = await fetch(`${BACKEND_URL}/kccApi`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'parseIntent', message: text })
+      body: JSON.stringify({ action: 'parseIntent', message: normalizedText })
     });
     const result = await res.json();
     typing.remove();
@@ -1091,7 +1115,7 @@ async function sendChat() {
     if (result.error) {
       const err = document.createElement('div');
       err.className = 'bubble ai';
-      err.textContent = 'Sorry, I couldn\'t parse that. Try: "Lock 5 KAS for 30 days"';
+      err.textContent = 'Sorry, I couldn\'t parse that. Try something like: "Lock 5 KAS for 30 days", "Escrow 10 KAS for buyer at kaspa:...", or "Send 2 KAS to kaspa:..."';
       log.appendChild(err);
     } else {
       const ai = document.createElement('div');
