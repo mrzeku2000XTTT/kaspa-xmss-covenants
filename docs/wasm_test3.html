@@ -1,0 +1,65 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>Kaspa WASM Test 3</title></head><body>
+<h1>Kaspa WASM SDK Browser Test v3</h1>
+<pre id="log"></pre>
+<script type="module">
+const log = document.getElementById('log');
+function out(msg) { log.textContent += msg + '\n'; }
+
+out('1. Importing SDK...');
+const kaspa = await import('https://esm.sh/@onekeyfe/kaspa-wasm@1.0.2');
+out('✅ initSync: ' + (typeof kaspa.initSync === 'function'));
+
+out('\n2. Fetching WASM binary from unpkg...');
+const wasmRes = await fetch('https://unpkg.com/@onekeyfe/kaspa-wasm@1.0.2/kaspa_bg.wasm.bin');
+out('Status: ' + wasmRes.status);
+const wasmBytes = await wasmRes.arrayBuffer();
+out('Size: ' + wasmBytes.byteLength + ' bytes');
+
+out('\n3. Async WebAssembly.compile...');
+const wasmModule = await WebAssembly.compile(wasmBytes);
+out('✅ Module compiled');
+
+out('\n4. initSync...');
+kaspa.initSync({ module: wasmModule });
+out('✅ initSync succeeded!');
+
+out('\n5. Testing createAddress...');
+const pk = new kaspa.PrivateKey();
+const addr = kaspa.createAddress(pk, 'mainnet');
+out('✅ Address: ' + addr.toString());
+
+out('\n6. Testing kaspaToSompi...');
+const sompi = kaspa.kaspaToSompi('1.5');
+out('✅ 1.5 KAS = ' + sompi + ' sompi');
+
+out('\n7. Testing createTransactions...');
+const entries = [{
+  address: addr.toString(),
+  outpoint: { transactionId: 'a'.repeat(64), index: 0 },
+  amount: BigInt(100000000),
+  scriptPublicKey: { version: 0, script: '2088' + 'a'.repeat(60) + 'ac' },
+  blockDaaScore: BigInt(1000),
+  isCoinbase: false,
+}];
+const result = await kaspa.createTransactions({
+  entries,
+  outputs: [{ address: addr.toString(), amount: BigInt(50000000) }],
+  changeAddress: addr.toString(),
+  priorityFee: BigInt(5000),
+  networkId: 'mainnet',
+});
+out('✅ createTransactions returned ' + result.transactions.length + ' tx(s)');
+out('TX inputs: ' + result.transactions[0].transaction.inputs.length);
+out('TX outputs: ' + result.transactions[0].transaction.outputs.length);
+
+out('\n8. Testing createInputSignature...');
+const tx = result.transactions[0].transaction;
+for (let i = 0; i < tx.inputs.length; i++) {
+  const sig = kaspa.createInputSignature(tx, i, pk, 1);
+  tx.inputs[i].signatureScript = sig;
+  out('✅ Input ' + i + ' signed, sig length: ' + sig.length);
+}
+
+out('\n🎉 ALL TESTS PASSED — SDK fully functional in browser!');
+</script>
+</body></html>
