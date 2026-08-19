@@ -192,8 +192,12 @@ textarea.input-field { resize: vertical; min-height: 60px; font-family: monospac
       <div class="action-btn" onclick="navTo('covenants')"><div class="icon">🔒</div><div class="label">Covenants</div></div>
       <div class="action-btn" onclick="copyAddress()"><div class="icon">📋</div><div class="label">Copy Addr</div></div>
     </div>
+    <div class="action-grid" style="grid-template-columns: 1fr 1fr;">
+      <div class="action-btn" onclick="showWalletSwitcher()"><div class="icon">🔄</div><div class="label">Switch Wallet</div></div>
+      <div class="action-btn" onclick="showAddWallet()"><div class="icon">➕</div><div class="label">Add Wallet</div></div>
+    </div>
     <div class="card">
-      <div class="card-title">Your Address</div>
+      <div class="card-title">Active Wallet — <span id="wallet-label" style="color:var(--blue);">—</span></div>
       <div style="font-family:monospace;font-size:13px;word-break:break-all;" id="addr-display">—</div>
     </div>
     <div class="card">
@@ -456,15 +460,20 @@ async function newWallet() {
     const pk = pkFromHex(hex);
     const addr = pk.toAddress('mainnet');
     const kp = pk.toKeypair('mainnet');
+    const wallets = getAllWallets();
+    const label = 'Wallet ' + (wallets.length + 1);
     wallet = {
       privKey: hex,
       address: addr.toString(),
-      pubKey: kp.xOnlyPublicKey
+      pubKey: kp.xOnlyPublicKey,
+      label: label
     };
-    saveWallet();
+    wallets.push(wallet);
+    saveAllWallets(wallets);
+    setActiveWalletIndex(wallets.length - 1);
     hideLoading();
     showDashboard();
-    showToast('Wallet created ✅');
+    showToast(label + ' created ✅');
   } catch(e) {
     hideLoading();
     showToast('Error: ' + e.message);
@@ -475,34 +484,87 @@ async function importWallet() {
   await initSDK();
   const hex = document.getElementById('import-key').value.trim();
   if (!hex || hex.length !== 64) { showToast('Invalid key — must be 64 hex chars'); return; }
+  // Check for duplicate
+  const existing = getAllWallets();
+  if (existing.some(w => w.privKey === hex)) { showToast('This wallet is already imported'); return; }
   showLoading('Importing wallet…');
   try {
     const pk = pkFromHex(hex);
     const addr = pk.toAddress('mainnet');
     const kp = pk.toKeypair('mainnet');
+    const label = 'Wallet ' + (existing.length + 1);
     wallet = {
       privKey: hex,
       address: addr.toString(),
-      pubKey: kp.xOnlyPublicKey
+      pubKey: kp.xOnlyPublicKey,
+      label: label
     };
-    saveWallet();
+    existing.push(wallet);
+    saveAllWallets(existing);
+    setActiveWalletIndex(existing.length - 1);
+    document.getElementById('import-key').value = '';
+    document.getElementById('import-section').classList.add('hidden');
     hideLoading();
     showDashboard();
-    showToast('Wallet imported ✅');
+    showToast(label + ' imported ✅');
   } catch(e) {
     hideLoading();
     showToast('Error: ' + e.message);
   }
 }
 
+function getAllWallets() {
+  const saved = localStorage.getItem('scorpion_wallets');
+  return saved ? JSON.parse(saved) : [];
+}
+function saveAllWallets(list) {
+  localStorage.setItem('scorpion_wallets', JSON.stringify(list));
+}
+function getActiveWalletIndex() {
+  return parseInt(localStorage.getItem('scorpion_active_wallet') || '0');
+}
+function setActiveWalletIndex(i) {
+  localStorage.setItem('scorpion_active_wallet', String(i));
+}
 function saveWallet() {
-  localStorage.setItem('scorpion_wallet', JSON.stringify(wallet));
+  // Migrate old single-wallet format if needed
+  const old = localStorage.getItem('scorpion_wallet');
+  if (old && !localStorage.getItem('scorpion_wallets')) {
+    const oldWallet = JSON.parse(old);
+    oldWallet.label = oldWallet.label || 'Migrated';
+    saveAllWallets([oldWallet]);
+    localStorage.removeItem('scorpion_wallet');
+  }
+  // Update current wallet in the list
+  const wallets = getAllWallets();
+  const idx = getActiveWalletIndex();
+  if (idx < wallets.length) {
+    wallets[idx] = wallet;
+  } else {
+    wallets.push(wallet);
+    setActiveWalletIndex(wallets.length - 1);
+  }
+  saveAllWallets(wallets);
 }
 function loadWallet() {
-  const saved = localStorage.getItem('scorpion_wallet');
-  if (!saved) return false;
-  wallet = JSON.parse(saved);
-  return true;
+  // Try new multi-wallet format first
+  const wallets = getAllWallets();
+  if (wallets.length > 0) {
+    const idx = Math.min(getActiveWalletIndex(), wallets.length - 1);
+    wallet = wallets[idx];
+    setActiveWalletIndex(idx);
+    return true;
+  }
+  // Fallback: old single-wallet format
+  const old = localStorage.getItem('scorpion_wallet');
+  if (old) {
+    wallet = JSON.parse(old);
+    wallet.label = wallet.label || 'Migrated';
+    saveAllWallets([wallet]);
+    localStorage.removeItem('scorpion_wallet');
+    return true;
+  }
+  return false;
 }
 function saveCovenants() {
   localStorage.setItem('scorpion_covenants', JSON.stringify(covenants));
@@ -513,12 +575,134 @@ function loadCovenants() {
 }
 
 // ═══ Dashboard ═══
+function showWalletSwitcher() {
+  const wallets = getAllWallets();
+  const activeIdx = getActiveWalletIndex();
+  let rowsHtml = '';
+  wallets.forEach((w, i) => {
+    const isActive = i === activeIdx;
+    rowsHtml += `
+      <div class="list-row" style="cursor:pointer;" onclick="switchToWallet(${i})">
+        <div>
+          <div style="font-weight:600;font-size:15px;">${isActive ? '✓ ' : ''}${w.label || 'Wallet ' + (i+1)}</div>
+          <div style="font-size:12px;color:var(--label-tertiary);font-family:monospace;">${w.address.slice(0,30)}…</div>
+        </div>
+        <div style="display:flex;gap:8px;">
+          ${!isActive ? '<button class="btn btn-primary" style="padding:8px 12px;font-size:13px;" onclick="event.stopPropagation();switchToWallet(' + i + ')">Switch</button>' : '<span style="color:var(--green);font-size:13px;">Active</span>'}
+          <button class="btn btn-secondary" style="padding:8px 12px;font-size:13px;" onclick="event.stopPropagation();renameWallet(${i})">✏️</button>
+          ${wallets.length > 1 ? '<button class="btn btn-danger" style="padding:8px 12px;font-size:13px;" onclick="event.stopPropagation();deleteWallet(${i})">🗑️</button>' : ''}
+        </div>
+      </div>`;
+  });
+  showReviewSheet({
+    title: 'Switch Wallet',
+    details: [{ k: 'Wallets', v: wallets.length + ' saved' }],
+    onConfirm: () => { closeSheet(); showAddWallet(); },
+    confirmLabel: '+ Add New'
+  });
+  // Replace sheet content with wallet list
+  const body = document.getElementById('sheet-body');
+  body.innerHTML = `
+    <h2 style="font-size:20px;font-weight:700;margin-bottom:16px;">Your Wallets</h2>
+    <div class="list">${rowsHtml}</div>
+    <div class="btn-row mt-16">
+      <button class="btn btn-secondary" onclick="closeSheet()">Close</button>
+      <button class="btn btn-primary" onclick="closeSheet();showAddWallet()">+ Add Wallet</button>
+    </div>`;
+}
+
+function showAddWallet() {
+  showReviewSheet({
+    title: 'Add Wallet',
+    details: [],
+    onConfirm: () => {},
+    confirmLabel: 'N/A'
+  });
+  const body = document.getElementById('sheet-body');
+  body.innerHTML = `
+    <h2 style="font-size:20px;font-weight:700;margin-bottom:16px;">Add Wallet</h2>
+    <p class="muted" style="font-size:14px;margin-bottom:16px;">Create a fresh wallet or import an existing one.</p>
+    <button class="btn btn-primary" onclick="closeSheet();newWallet()">Create New Wallet</button>
+    <button class="btn btn-secondary mt-8" onclick="closeSheet();document.getElementById('page-onboarding').classList.remove('hidden');document.getElementById('import-section').classList.remove('hidden');document.getElementById('import-key').focus()">Import Private Key</button>
+    <button class="btn btn-secondary mt-8" onclick="closeSheet()">Cancel</button>`;
+}
+
+function switchToWallet(idx) {
+  const wallets = getAllWallets();
+  if (idx < 0 || idx >= wallets.length) return;
+  setActiveWalletIndex(idx);
+  wallet = wallets[idx];
+  saveWallet();
+  closeSheet();
+  showDashboard();
+  showToast('Switched to ' + (wallet.label || 'Wallet ' + (idx+1)));
+}
+
+function renameWallet(idx) {
+  const wallets = getAllWallets();
+  const oldLabel = wallets[idx].label || 'Wallet ' + (idx+1);
+  showReviewSheet({
+    title: 'Rename Wallet',
+    details: [],
+    onConfirm: () => {},
+    confirmLabel: 'N/A'
+  });
+  const body = document.getElementById('sheet-body');
+  body.innerHTML = `
+    <h2 style="font-size:20px;font-weight:700;margin-bottom:16px;">Rename Wallet</h2>
+    <div class="input-group">
+      <label>Wallet Name</label>
+      <input type="text" class="input-field" id="rename-input" value="${oldLabel}" maxlength="20" placeholder="My Trading Wallet">
+    </div>
+    <div class="btn-row mt-16">
+      <button class="btn btn-secondary" onclick="closeSheet();showWalletSwitcher()">Cancel</button>
+      <button class="btn btn-primary" id="rename-confirm">Save</button>
+    </div>`;
+  document.getElementById('rename-confirm').onclick = () => {
+    const name = document.getElementById('rename-input').value.trim() || oldLabel;
+    wallets[idx].label = name;
+    saveAllWallets(wallets);
+    if (idx === getActiveWalletIndex()) wallet.label = name;
+    closeSheet();
+    showWalletSwitcher();
+    showToast('Renamed to ' + name);
+  };
+}
+
+function deleteWallet(idx) {
+  const wallets = getAllWallets();
+  if (wallets.length <= 1) { showToast('Cannot delete the last wallet'); return; }
+  showReviewSheet({
+    title: 'Delete Wallet?',
+    details: [
+      { k: 'Wallet', v: wallets[idx].label || 'Wallet ' + (idx+1) },
+      { k: 'Address', v: wallets[idx].address.slice(0, 24) + '…' },
+      { k: 'Warning', v: 'Make sure you have the private key backed up!' }
+    ],
+    onConfirm: () => {
+      const wallets = getAllWallets();
+      wallets.splice(idx, 1);
+      saveAllWallets(wallets);
+      let activeIdx = getActiveWalletIndex();
+      if (activeIdx >= wallets.length) activeIdx = wallets.length - 1;
+      setActiveWalletIndex(activeIdx);
+      wallet = wallets[activeIdx];
+      closeSheet();
+      showDashboard();
+      showToast('Wallet deleted');
+    },
+    confirmLabel: 'Delete'
+  });
+}
+
 function showDashboard() {
   document.getElementById('page-onboarding').classList.add('hidden');
   document.getElementById('page-dashboard').classList.remove('hidden');
   document.getElementById('navbar').classList.remove('hidden');
   document.getElementById('tabbar').classList.remove('hidden');
   document.getElementById('addr-display').textContent = wallet.address;
+  const labelEl = document.getElementById('wallet-label');
+  if (labelEl) labelEl.textContent = wallet.label || 'Unnamed';
   document.getElementById('key-display').textContent = '••••••••';
   keyVisible = false;
   navTo('dashboard');
@@ -1073,6 +1257,11 @@ window.sendChat = sendChat;
 window.navTo = navTo;
 window.navBack = navBack;
 window.closeSheet = closeSheet;
+window.showWalletSwitcher = showWalletSwitcher;
+window.showAddWallet = showAddWallet;
+window.switchToWallet = switchToWallet;
+window.renameWallet = renameWallet;
+window.deleteWallet = deleteWallet;
 
 init();
 </script>
