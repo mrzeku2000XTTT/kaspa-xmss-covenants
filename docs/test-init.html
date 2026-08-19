@@ -1,27 +1,32 @@
 <!DOCTYPE html><html><head><meta charset="UTF-8"></head><body>
 <pre id="log">Loading...</pre>
 <script type="module">
-const log = s => { document.getElementById('log').textContent += '\n' + s; console.log(s); };
+const log = s => { document.getElementById('log').textContent += '\n' + s; };
 try {
-  log('Importing kaspa?bundle...');
   const kaspa = await import('https://esm.sh/@onekeyfe/kaspa-wasm@1.0.2?bundle');
-  log('Imported. typeof default: ' + typeof kaspa.default);
-  log('Calling kaspa.default()...');
   await kaspa.default();
-  log('SUCCESS! SDK initialized.');
-  log('PrivateKey: ' + typeof kaspa.PrivateKey);
-  log('createAddress: ' + typeof kaspa.createAddress);
-  // Test key generation
-  const arr = new Uint8Array(32);
-  crypto.getRandomValues(arr);
+  log('SDK ready');
+  // Check NetworkId
+  log('NetworkId: ' + JSON.stringify(kaspa.NetworkId));
+  log('NetworkId keys: ' + Object.keys(kaspa.NetworkId || {}).join(', '));
+  log('NetworkType: ' + JSON.stringify(kaspa.NetworkType));
+  // Try createAddress with string
+  const arr = new Uint8Array(32); crypto.getRandomValues(arr);
   const hex = Array.from(arr).map(b=>b.toString(16).padStart(2,'0')).join('');
   const pk = new kaspa.PrivateKey(hex);
-  const addr = kaspa.createAddress(pk, 'mainnet');
-  log('Test address: ' + addr.toString());
-  log('ALL GOOD - SDK works on main thread!');
-} catch(e) {
-  log('FAILED: ' + e.message);
-  log(e.stack);
-}
+  log('PK created: ' + typeof pk);
+  try {
+    const addr1 = kaspa.createAddress(pk, 'mainnet');
+    log('addr1 (string): ' + addr1.toString());
+  } catch(e1) { log('createAddress string err: ' + e1.message); }
+  try {
+    const addr2 = kaspa.createAddress(pk, kaspa.NetworkId.Mainnet);
+    log('addr2 (NetworkId.Mainnet): ' + addr2.toString());
+  } catch(e2) { log('createAddress NetworkId err: ' + e2.message); }
+  try {
+    const kp = new kaspa.Keypair(pk, 'mainnet');
+    log('Keypair addr: ' + kp.address.toString());
+  } catch(e3) { log('Keypair err: ' + e3.message); }
+} catch(e) { log('Error: ' + e.message + '\n' + e.stack); }
 </script>
 </body></html>
