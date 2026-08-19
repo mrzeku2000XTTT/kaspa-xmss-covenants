@@ -669,11 +669,10 @@ function debugLog(msg) {
 
 async function buildManualCovenant() {
   debugLog('buildManualCovenant called');
-  try {
-    await initSDK();
-    debugLog('SDK ready: ' + sdkReady);
-    const type = document.querySelector('.seg.active').dataset.type;
-    debugLog('type: ' + type);
+  await initSDK();
+  debugLog('SDK ready: ' + sdkReady);
+  const type = document.querySelector('.seg.active').dataset.type;
+  debugLog('type: ' + type);
   let params = {}, extraData = {};
   if (type === 'timelock') {
     params = { amountKas: parseFloat(document.getElementById('ct-amount').value), lockDays: parseFloat(document.getElementById('ct-days').value) };
