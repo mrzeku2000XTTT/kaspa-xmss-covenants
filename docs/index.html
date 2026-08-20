@@ -303,7 +303,7 @@ const DAA_PER_DAY = 864000;
 let currentNetwork = localStorage.getItem('scorpion_network') || 'mainnet';
 const NETWORKS = {
   mainnet: { id: 'mainnet', apiBase: 'https://api.kaspa.org', label: 'Mainnet', wrpc: 'wss://ivy.kaspa.green/kaspa/mainnet/wrpc/borsh' },
-  testnet10: { id: 'testnet-10', apiBase: 'https://tn-10.kaspa.org/api', label: 'Testnet-10', wrpc: 'wss://tn-10.kaspa.green/kaspa/testnet-10/wrpc/borsh' }
+  testnet10: { id: 'testnet-10', apiBase: 'https://api-tn10.kaspa.org', label: 'Testnet-10', wrpc: 'wss://wrpc-tn10.kaspa.green/kaspa/testnet-10/wrpc/borsh' }
 };
 function getApiBase() { return NETWORKS[currentNetwork].apiBase; }
 function getNetworkId() { return NETWORKS[currentNetwork].id; }
