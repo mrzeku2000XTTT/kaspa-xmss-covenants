@@ -672,8 +672,17 @@ function showAddWallet() {
     <h2 style="font-size:20px;font-weight:700;margin-bottom:16px;">Add Wallet</h2>
     <p class="muted" style="font-size:14px;margin-bottom:16px;">Create a fresh wallet or import an existing one.</p>
     <button class="btn btn-primary" onclick="closeSheet();newWallet()">Create New Wallet</button>
-    <button class="btn btn-secondary mt-8" onclick="closeSheet();document.getElementById('page-onboarding').classList.remove('hidden');document.getElementById('import-section').classList.remove('hidden');document.getElementById('import-key').focus()">Import Private Key</button>
+    <button class="btn btn-secondary mt-8" onclick="closeSheet();showImportFromAdd()">Import Private Key</button>
     <button class="btn btn-secondary mt-8" onclick="closeSheet()">Cancel</button>`;
+}
+
+function showImportFromAdd() {
+  document.getElementById('page-dashboard').classList.add('hidden');
+  document.getElementById('navbar').classList.add('hidden');
+  document.getElementById('tabbar').classList.add('hidden');
+  document.getElementById('page-onboarding').classList.remove('hidden');
+  document.getElementById('import-section').classList.remove('hidden');
+  document.getElementById('import-key').focus();
 }
 
 function switchToWallet(idx) {
@@ -1654,6 +1663,15 @@ window.showAddWallet = showAddWallet;
 window.switchToWallet = switchToWallet;
 window.renameWallet = renameWallet;
 window.deleteWallet = deleteWallet;
+window.sweepCovenant = sweepCovenant;
+window.checkCovenantStatus = checkCovenantStatus;
+window.showCovenantDetails = showCovenantDetails;
+window.fundCovenant = fundCovenant;
+window.showSweepWallet = showSweepWallet;
+window.showImportFromAdd = showImportFromAdd;
+window.refreshBalance = refreshBalance;
+window.fetchUTXOs = fetchUTXOs;
+window.renderCovenants = renderCovenants;
 
 init();
 </script>
