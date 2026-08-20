@@ -5,7 +5,7 @@ const browser = await puppeteer.launch({ executablePath: edge, headless: true, a
 const page = await browser.newPage();
 page.setDefaultTimeout(180000);
 page.on('pageerror', e => console.log('PAGEERROR', e.message));
-await page.goto('http://127.0.0.1:4173/?v=21', { waitUntil: 'domcontentloaded', timeout: 60000 });
+await page.goto('http://127.0.0.1:4173/?v=25', { waitUntil: 'domcontentloaded', timeout: 60000 });
 await page.waitForSelector('#btn-create');
 await page.click('#btn-create');
 await page.waitForFunction(() => document.getElementById('page-home')?.classList.contains('active'));

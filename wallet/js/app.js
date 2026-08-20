@@ -46,6 +46,10 @@ let liveTimer = null;
 let liveFast = false;
 let seenBalance = null;
 let receiveWatch = false;
+let lastDaa = 0;
+let lastAutoSweep = 0;
+let autoSweepBusy = false;
+const autoSweepTried = new Set();
 
 function haptic() { try { navigator.vibrate?.(12); } catch {} }
 
@@ -192,6 +196,17 @@ function renderTokens() {
     : `<div class="empty">Watch a KCC20 by ticker and covenant address. KCC20 balances appear once an indexer or instance address is added.</div>`;
 }
 
+function vaultStatusLine(v) {
+  const amt = v.fundedSompi ? formatAmount(v.fundedSompi) + ' KAS' : '0 KAS';
+  if (!v.fundedSompi) return `${v.status || 'unfunded'} · ${amt}`;
+  if (v.unlockDaa && lastDaa && lastDaa < Number(v.unlockDaa)) {
+    const sec = Math.max(0, Math.ceil((Number(v.unlockDaa) - lastDaa) / 10));
+    return `Locked ~${sec}s · ${amt}`;
+  }
+  if (v.unlockDaa) return `Unlocked — returning · ${amt}`;
+  return `${v.status || 'funded'} · ${amt}`;
+}
+
 function renderVault() {
   const mine = loadVaults();
   $('vault-products').innerHTML = VAULT_PRODUCTS.map(p => `
@@ -209,7 +224,7 @@ function renderVault() {
         <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start;">
           <div style="min-width:0;">
             <div class="title">${esc(v.name || v.type)}</div>
-            <div class="sub" style="margin-top:4px;">${esc(v.status || 'unfunded')} · ${v.fundedSompi ? formatAmount(v.fundedSompi) + ' KAS' : '0 KAS'}</div>
+            <div class="sub" style="margin-top:4px;">${esc(vaultStatusLine(v))}</div>
             <div class="mono" style="font-size:11px;color:var(--label-2);margin-top:6px;word-break:break-all;">${esc(v.address || '')}</div>
           </div>
         </div>
@@ -312,6 +327,11 @@ async function tickLive(full) {
       } catch {}
       refreshVaultBalances();
     }
+    const now = Date.now();
+    if (full || now - lastAutoSweep > 8000) {
+      lastAutoSweep = now;
+      maybeAutoUnlock();
+    }
   } catch (e) {
     console.warn(e);
   }
@@ -322,15 +342,50 @@ async function refreshAll() {
 }
 
 async function refreshVaultBalances() {
+  try { lastDaa = await currentDaa(); } catch {}
   const mine = loadVaults();
   for (const v of mine) {
     if (!v.address || !v.address.startsWith('kaspa:')) continue;
     try {
       const bal = await fetchAddressBalance(v.address);
-      updateVault(v.address, { fundedSompi: bal, status: bal > 0 ? 'funded' : (v.status || 'unfunded') });
+      updateVault(v.address, { fundedSompi: bal, status: bal > 0 ? (v.unlockDaa && lastDaa < Number(v.unlockDaa) ? 'locked' : 'funded') : (v.status === 'swept' ? 'swept' : 'unfunded') });
     } catch {}
   }
   if (currentTab === 'vault') renderVault();
+}
+
+async function maybeAutoUnlock() {
+  if (!wallet || autoSweepBusy) return;
+  autoSweepBusy = true;
+  try {
+    const daa = await currentDaa();
+    lastDaa = daa;
+    const mine = loadVaults().filter(v => v.address && Number(v.unlockDaa) > 0);
+    for (const v of mine) {
+      if (daa < Number(v.unlockDaa)) continue;
+      if (autoSweepTried.has(v.address)) continue;
+      let utxosV = [];
+      try { utxosV = await fetchAddressUtxos(v.address); } catch { continue; }
+      if (!utxosV.length) continue;
+      autoSweepTried.add(v.address);
+      toast('Time lock ended — returning KAS…');
+      try {
+        const result = await sweepVault({ wallet, vault: v, utxos: utxosV });
+        updateVault(v.address, { status: 'swept', unlockTxId: result.txId, fundedSompi: 0 });
+        toast(`Returned ${result.amountKas} KAS from time capsule`);
+        setLiveFast(true);
+        setTimeout(() => setLiveFast(false), 25000);
+        if (currentTab === 'vault') renderVault();
+      } catch (e) {
+        autoSweepTried.delete(v.address);
+        console.warn('auto-unlock', e);
+      }
+    }
+  } catch (e) {
+    console.warn(e);
+  } finally {
+    autoSweepBusy = false;
+  }
 }
 
 function setSheetStatus(msg, isErr) {
@@ -600,7 +655,7 @@ function openVaultReady(vault) {
     ${vault.params?.duration ? `<div class="kv"><span class="k">Lock</span><span class="v">${esc(vault.params.duration)}</span></div>` : ''}
     ${vault.unlockDaa ? `<div class="kv"><span class="k">Unlock DAA</span><span class="v">${esc(vault.unlockDaa)}</span></div>` : ''}
     <div class="kv"><span class="k">Covenant</span><span class="v">${esc(vault.address)}</span></div>
-    <p class="muted" style="text-align:left;">P2SH Time Capsule: <span class="mono">CLTV → DROP → CHECKSIG</span>. Funding is a Toccata v1 genesis (covenant ID on the output). Your key stays <span class="mono">kaspa:q…</span>; the vault is <span class="mono">kaspa:p…</span>.</p>
+    <p class="muted" style="text-align:left;">KAS leaves this wallet into a <span class="mono">kaspa:p…</span> capsule. It cannot move until the timer. Keep this app open: when the lock expires we Sweep it back automatically.</p>
   `, {
     confirm: 'Send ' + vault.params.amountKas + ' KAS in',
     cancelLabel: 'Copy address',
@@ -663,7 +718,7 @@ async function openVaultDetail(address) {
     <div class="kv"><span class="k">Locked</span><span class="v">${formatAmount(vault.fundedSompi || 0)} KAS</span></div>
     <div class="kv"><span class="k">Address</span><span class="v">${esc(vault.address)}</span></div>
     ${vault.unlockDaa ? `<div class="kv"><span class="k">Unlock DAA</span><span class="v">${esc(vault.unlockDaa)} (now ${esc(daa || '—')})</span></div>` : ''}
-    <p class="muted" style="text-align:left;">${locked ? `Time-lock still active (~${waitSec}s). Sweep after it expires.` : 'If this vault holds KAS, Sweep sends it back to your kaspa:q… wallet.'}</p>
+    <p class="muted" style="text-align:left;">${locked ? `Still frozen on-chain (~${waitSec}s). The node will reject a spend until then. This app sweeps it back when the timer hits zero.` : 'Lock has expired. Sweep (or wait — auto-return is on) to send KAS back to this wallet.'}</p>
     <button class="btn btn-gold" id="v-unlock" style="margin-top:14px;">Sweep to wallet</button>
     <div class="btn-row" style="margin-top:10px;">
       <button class="btn btn-glass" id="v-copy">Copy</button>
@@ -676,6 +731,7 @@ async function openVaultDetail(address) {
 }
 
 async function unlockVault(vault) {
+  autoSweepTried.add(vault.address);
   openSheet('Sweep vault', `
     <p class="muted" style="text-align:left;">Returning KAS from this covenant to your wallet.</p>
     <div class="kv"><span class="k">From</span><span class="v">${esc(vault.address || '')}</span></div>

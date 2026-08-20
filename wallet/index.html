@@ -11,7 +11,7 @@
   <link rel="apple-touch-icon" href="assets/icon.png">
   <link rel="icon" href="assets/icon.png">
   <title>KCC20 Wallet</title>
-  <link rel="stylesheet" href="css/app.css?v=21">
+  <link rel="stylesheet" href="css/app.css?v=25">
 </head>
 <body>
   <img class="bg-poster" src="assets/bg.jpg" alt="">
@@ -101,7 +101,7 @@
             <h3 style="font-size:18px;margin-bottom:6px;">Ask the builder</h3>
             <p class="muted" style="text-align:left;padding:0 0 10px;">Describe a covenant in plain English.</p>
             <div class="chat" id="chat-log">
-              <div class="bubble ai">Say it like you mean it: <em>Lock .15 KAS for 3 minutes</em>. I also take “.15 kas”, “3 min”, escrow, and send.</div>
+              <div class="bubble ai">Say it like you mean it: <em>Lock .15 KAS for 3 minutes</em>. That sends KAS to a capsule; when the timer ends this wallet returns it. I also take escrow and send.</div>
             </div>
             <div class="chatbar">
               <input id="chat-input" placeholder="Describe a vault…" autocomplete="off">
@@ -110,7 +110,7 @@
           </div>
           <div class="glass" id="sweep-panel" style="padding:18px;margin-bottom:16px;">
             <h3 style="font-size:18px;margin-bottom:6px;">Sweep</h3>
-            <p class="muted" style="text-align:left;padding:0 0 12px;">Pull locked KAS out of your time capsules and send it back to this wallet.</p>
+            <p class="muted" style="text-align:left;padding:0 0 12px;">Time capsules auto-return when the lock expires (keep the app open). Sweep now if you don’t want to wait.</p>
             <button class="btn btn-gold" id="btn-sweep-now" type="button">Sweep vaults</button>
             <div class="field" style="margin-top:14px;">
               <label>Or paste a kaspa:p… vault address</label>
@@ -161,6 +161,6 @@
     </div>
   </div>
 
-  <script type="module" src="js/app.js?v=21"></script>
+  <script type="module" src="js/app.js?v=25"></script>
 </body>
 </html>

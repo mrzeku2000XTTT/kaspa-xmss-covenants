@@ -281,7 +281,7 @@ export function planKasPayment(k, entries, amount, fee) {
     acc.push(e); sum += e.amount;
     if (sum >= need) { tries.push([...acc]); break; }
   }
-  if (usable.length) tries.push(usable);
+  if (usable.length) tries.unshift(usable);
 
   const dust = 200_000n;
   const seen = new Set();
@@ -347,7 +347,20 @@ function bindCovenantOutputs(k, tx, destStr) {
   return covenantId;
 }
 
-async function submitSignedRpc(k, rpc, url, tx, { sigOpCount, computeBudget, lockTime }) {
+function signP2pkInputs(k, tx, priv) {
+  const scripts = [];
+  const n = tx.inputs.length;
+  for (let i = 0; i < n; i++) {
+    const sig = k.createInputSignature(tx, i, priv, k.SighashType.All);
+    const hex = hexish(sig);
+    if (!hex || hex.length < 20) throw new Error('Signing failed — empty P2PK signature');
+    tx.inputs[i].signatureScript = hex;
+    scripts.push(hex);
+  }
+  return scripts;
+}
+
+async function submitSignedRpc(k, rpc, url, tx, { sigOpCount, computeBudget, lockTime, scripts }) {
   const version = Number(tx.version || 1);
   // v1 forbids a non-zero sig_op_count; compute_budget carries the mass.
   const opCount = version >= 1 ? 0 : Number(sigOpCount ?? 1);
@@ -359,11 +372,14 @@ async function submitSignedRpc(k, rpc, url, tx, { sigOpCount, computeBudget, loc
   });
   const live = tx.inputs;
   obj.inputs.forEach((inp, i) => {
-    inp.signatureScript = hexish(live[i].signatureScript);
+    inp.signatureScript = hexish(scripts?.[i] || live[i].signatureScript);
     inp.sequence = Number(live[i].sequence ?? inp.sequence ?? 0);
     inp.sigOpCount = opCount;
     if (version >= 1) inp.computeBudget = Number(computeBudget ?? 10);
   });
+  if (obj.inputs.some(inp => !inp.signatureScript || inp.signatureScript.length < 20)) {
+    throw new Error('Refusing to broadcast — an input is missing its signature');
+  }
   const plain = JSON.parse(JSON.stringify(obj));
   try {
     const txId = await submitRpcTx(rpc, url, plain);
@@ -395,9 +411,12 @@ export async function sendKas({ wallet, dest, amountKas, utxos }) {
   const isCovenantDest = destStr.startsWith('kaspa:p');
   const { rpc, url } = await connectPublicNode();
   const feeRate = await nodeFeeRate(rpc);
-  const feeGuess = 200_000n;
+  const feeGuess = 500_000n;
   const plan = planKasPayment(k, entries, requested, feeGuess);
-  if (!plan) throw new Error('Not enough KAS, or this coin cannot be split under Kaspa storage-mass rules. Sweep leftovers first or send a larger amount.');
+  if (!plan) {
+    const have = entries.reduce((a, e) => a + e.amount, 0n);
+    throw new Error(`Have ${Number(have) / 1e8} KAS in UTXOs but cannot place ${Number(requested) / 1e8} KAS without breaking storage-mass (try 0.2 KAS, or lock the whole leftover).`);
+  }
 
   const amount = plan.amount;
   const boosted = !!plan.boosted;
@@ -438,9 +457,30 @@ export async function sendKas({ wallet, dest, amountKas, utxos }) {
     const isFinal = p === pendingList.length - 1;
     if (isCovenantDest && isFinal) covenantId = bindCovenantOutputs(k, tx, destStr);
     try { k.updateTransactionMass('mainnet', tx); } catch {}
-    if (typeof pending.sign === 'function') pending.sign([priv]);
-    else k.signTransaction(tx, [priv], false);
-    txId = await submitSignedRpc(k, rpc, url, tx, { sigOpCount: 0, computeBudget: 10, lockTime: 0 });
+    let scripts = meetToccataFee(k, tx, priv, plan.entries, 0n);
+    try {
+      txId = await submitSignedRpc(k, rpc, url, tx, {
+        sigOpCount: 0,
+        computeBudget: 10,
+        lockTime: 0,
+        scripts
+      });
+    } catch (e) {
+      const need = requiredFeeFromError(e);
+      const paid = txInputSum(tx, plan.entries) - txOutputSum(tx);
+      if (need && need > paid) {
+        shrinkOutputsForFee(tx, need - paid + 50_000n);
+        scripts = signP2pkInputs(k, tx, priv);
+        txId = await submitSignedRpc(k, rpc, url, tx, {
+          sigOpCount: 0,
+          computeBudget: 10,
+          lockTime: 0,
+          scripts
+        });
+      } else {
+        throw e;
+      }
+    }
   }
   if (!txId) throw new Error(lastErr || 'Node did not return a transaction id');
   return {
@@ -511,21 +551,58 @@ async function submitRpcTx(rpc, url, obj) {
   return submitted?.transactionId || submitted || null;
 }
 
-function toccataMinFee(k, tx) {
+function toccataMinFee(k, tx, floor = 0n) {
+  // Fee is 100 sompi * compute mass. calculateTransactionMass is max(compute, storage);
+  // multiplying storage mass by 100 asks for absurd fees (e.g. 0.24 KAS) and blocks a 0.15 lock.
   let need = 0n;
   try {
     const f = k.calculateTransactionFee('mainnet', tx, 1);
     if (f != null) need = BigInt(f);
   } catch {}
-  try {
-    const m = k.calculateTransactionMass('mainnet', tx, 1);
-    if (m != null) {
-      const fromMass = BigInt(m) * 100n;
-      if (fromMass > need) need = fromMass;
+  if (need < 400_000n) need = 400_000n;
+  if (need < floor) need = floor;
+  if (need > 2_000_000n) need = 2_000_000n;
+  return need + 50_000n;
+}
+
+function txOutputSum(tx) {
+  return [...tx.outputs].reduce((a, o) => a + BigInt(o.value), 0n);
+}
+
+function txInputSum(tx, entries) {
+  let s = 0n;
+  for (const inp of tx.inputs) {
+    try {
+      const a = inp.utxo?.amount;
+      if (a != null) s += BigInt(a);
+    } catch {}
+  }
+  if (s > 0n) return s;
+  return (entries || []).reduce((a, e) => a + BigInt(e.amount), 0n);
+}
+
+function shrinkOutputsForFee(tx, extra) {
+  const outs = tx.outputs;
+  for (let i = outs.length - 1; i >= 0; i--) {
+    const v = BigInt(outs[i].value);
+    if (v > extra + 10_000n) {
+      outs[i].value = v - extra;
+      return;
     }
-  } catch {}
-  if (need < 1_000_000n) need = 1_000_000n;
-  return need + need / 10n;
+  }
+  throw new Error('Not enough leftover to cover the network fee');
+}
+
+function meetToccataFee(k, tx, priv, entries, floor = 0n) {
+  let scripts = signP2pkInputs(k, tx, priv);
+  for (let round = 0; round < 3; round++) {
+    const need = toccataMinFee(k, tx, floor);
+    const paid = txInputSum(tx, entries) - txOutputSum(tx);
+    if (paid >= need) return scripts;
+    shrinkOutputsForFee(tx, need - paid);
+    scripts = signP2pkInputs(k, tx, priv);
+  }
+  return scripts;
 }
 
 function requiredFeeFromError(e) {
@@ -569,19 +646,19 @@ export async function sweepVault({ wallet, vault, utxos }) {
       inp.sigOpCount = 0;
       inp.computeBudget = 60;
     }
-    signP2shInputs(k, tx, priv, redeemHex);
+    const scripts = signP2shInputs(k, tx, priv, redeemHex);
     for (const inp of tx.inputs) {
       inp.sigOpCount = 0;
       inp.computeBudget = 60;
     }
     try { k.updateTransactionMass('mainnet', tx); } catch {}
-    return { tx, sendAmt, fee };
+    return { tx, sendAmt, fee, scripts };
   }
 
   // Toccata mempool: 100 sompi * compute mass (node required 666900 for mass 6669).
   let fee = 1_000_000n;
   let built = assemble(fee);
-  const measured = toccataMinFee(k, built.tx);
+  const measured = toccataMinFee(k, built.tx, 1_000_000n);
   if (measured > fee) {
     fee = measured;
     built = assemble(fee);
@@ -593,7 +670,8 @@ export async function sweepVault({ wallet, vault, utxos }) {
       const txId = await submitSignedRpc(k, rpc, url, built.tx, {
         sigOpCount: 0,
         computeBudget: 60,
-        lockTime
+        lockTime,
+        scripts: built.scripts
       });
       if (txId) return { txId, amountKas: Number(built.sendAmt) / 1e8, node: url, feeKas: Number(built.fee) / 1e8 };
     } catch (e) {

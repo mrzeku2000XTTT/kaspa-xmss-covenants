@@ -36,7 +36,7 @@ export const VAULT_PRODUCTS = [
     type: 'timelock',
     tag: 'CLTV',
     status: 'mainnet',
-    blurb: 'Lock KAS until a date. Classic Apple-style savings vault.'
+    blurb: 'Sends KAS to a capsule until a timer. When it expires, this wallet sweeps it back automatically.'
   },
   {
     id: 'escrow',
