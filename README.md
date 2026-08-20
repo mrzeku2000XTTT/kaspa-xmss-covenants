@@ -32,7 +32,8 @@ script construction.
 | `covenants/time_capsule/` | XMSS signature + `OP_CLTV` timelock combo |
 | `covenants/hypertree_2layer/` | The core 2-layer XMSS^MT hypertree at 3 scales (2^8 → 2^20 → 2^32 addressable signatures), with genuine on-chain linkage (layer0's root is computed live in-script and fed directly into layer1) |
 | `cold-wallet/` | Air-gapped signing workflow + verification test + QR-transfer design spec |
-| `docs/` | Architecture deep-dive and the full list of mainnet transaction proofs |
+| `docs/` | Architecture deep-dive, mainnet proofs, and the GitHub Pages KCC20 Wallet PWA |
+| `wallet/` | Premium iOS KCC20 wallet — video background, native KAS, token watchlist, covenant vaults (Vercel root: `wallet/`) |
 | `covenants/sentinel/` | Quantum-safe dead-man's-switch: XMSS check-ins + resettable CLTV timeout, fully generalized customer-key pipeline |
 | `covenants/zkgate_groth16/` | ZK covenant secured by a Groth16 proof (`OpZkPrecompile` tag `0x20`) — circuit, verification key, generic deploy/unlock scripts |
 | `covenants/zkgate_risc0/` | ZK covenant secured by a RISC Zero succinct STARK proof (`OpZkPrecompile` tag `0x21`) — post-quantum, no trusted setup |

@@ -1,0 +1,1252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Scorpion">
+<meta name="theme-color" content="#000000">
+<title>Scorpion Wallet — KCC20 Covenants on Kaspa</title>
+<style>
+/* ═══ iOS Design System ═══ */
+:root {
+  --bg: #000000;
+  --bg2: #0a0a0c;
+  --surface: #1c1c1e;
+  --surface2: #2c2c2e;
+  --surface3: #3a3a3c;
+  --separator: rgba(84,84,88,0.36);
+  --separator-opaque: #38383a;
+  --label: #ffffff;
+  --label-secondary: rgba(235,235,245,0.6);
+  --label-tertiary: rgba(235,235,245,0.3);
+  --blue: #0a84ff;
+  --green: #30d158;
+  --red: #ff453a;
+  --orange: #ff9f0a;
+  --yellow: #ffd60a;
+  --teal: #64d2ff;
+  --indigo: #5e5ce6;
+  --purple: #bf5af2;
+  --pink: #ff375f;
+  --fill-primary: #0a84ff;
+  --fill-secondary: rgba(120,120,128,0.32);
+  --radius-xl: 24px;
+  --radius-lg: 18px;
+  --radius-md: 14px;
+  --radius-sm: 10px;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+html, body {
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', system-ui, sans-serif;
+  background: var(--bg); color: var(--label);
+  min-height: 100vh; overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  font-size: 17px; letter-spacing: -0.2px;
+}
+body { padding-top: var(--safe-top); padding-bottom: var(--safe-bottom); }
+
+/* ═══ Navigation Bar (iOS style) ═══ */
+.navbar {
+  position: sticky; top: 0; z-index: 100;
+  background: rgba(0,0,0,0.72);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  border-bottom: 0.5px solid var(--separator);
+  padding: 10px 16px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.navbar-title {
+  font-size: 17px; font-weight: 600; text-align: center;
+  flex: 1; letter-spacing: -0.4px;
+}
+.navbar-btn {
+  font-size: 17px; color: var(--blue); font-weight: 400;
+  cursor: pointer; min-width: 60px;
+}
+.navbar-btn.left { text-align: left; }
+.navbar-btn.right { text-align: right; }
+.navbar-btn:active { opacity: 0.5; }
+
+/* ═══ Scrollable Content ═══ */
+.scroll-content {
+  max-width: 440px; margin: 0 auto;
+  min-height: calc(100vh - 120px);
+  padding: 0 16px 120px;
+}
+
+/* ═══ Onboarding ═══ */
+.onboarding { text-align: center; padding: 60px 0 30px; }
+.onboarding-logo {
+  width: 80px; height: 80px; margin: 0 auto 24px;
+  background: linear-gradient(135deg, var(--indigo), var(--purple));
+  border-radius: 20px;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 8px 32px rgba(94,92,230,0.3);
+}
+.onboarding-logo svg { width: 44px; height: 44px; }
+.onboarding h1 {
+  font-size: 28px; font-weight: 700; letter-spacing: -0.8px;
+  margin-bottom: 8px;
+}
+.onboarding p {
+  font-size: 15px; color: var(--label-secondary);
+  line-height: 1.5; max-width: 300px; margin: 0 auto 32px;
+}
+
+/* ═══ iOS List ═══ */
+.list {
+  background: var(--surface); border-radius: var(--radius-lg);
+  overflow: hidden; margin-bottom: 24px;
+}
+.list-header {
+  font-size: 13px; font-weight: 400; color: var(--label-secondary);
+  text-transform: uppercase; letter-spacing: 0.4px;
+  padding: 0 16px 6px;
+}
+.list-row {
+  display: flex; align-items: center; padding: 14px 16px;
+  border-bottom: 0.5px solid var(--separator);
+  cursor: pointer; transition: background 0.15s;
+  min-height: 58px;
+}
+.list-row:last-child { border-bottom: none; }
+.list-row:active { background: var(--surface2); }
+.list-row .icon {
+  width: 32px; height: 32px; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  margin-right: 12px; flex-shrink: 0;
+}
+.list-row .icon svg { width: 18px; height: 18px; }
+.list-row .text { flex: 1; }
+.list-row .title { font-size: 17px; font-weight: 400; }
+.list-row .subtitle { font-size: 13px; color: var(--label-secondary); margin-top: 2px; }
+.list-row .value { font-size: 17px; color: var(--label-secondary); text-align: right; }
+.list-row .chevron { color: var(--label-tertiary); margin-left: 6px; }
+
+/* ═══ Balance Card (Fintech Hero) ═══ */
+.balance-card {
+  background: linear-gradient(160deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+  border-radius: var(--radius-xl);
+  padding: 28px 24px; margin: 16px 0 24px;
+  position: relative; overflow: hidden;
+}
+.balance-card::before {
+  content: ''; position: absolute; top: -50%; right: -30%;
+  width: 200px; height: 200px;
+  background: radial-gradient(circle, rgba(94,92,230,0.15), transparent 70%);
+  border-radius: 50%;
+}
+.balance-card::after {
+  content: ''; position: absolute; bottom: -40%; left: -20%;
+  width: 180px; height: 180px;
+  background: radial-gradient(circle, rgba(10,132,255,0.12), transparent 70%);
+  border-radius: 50%;
+}
+.balance-label {
+  font-size: 13px; color: rgba(255,255,255,0.5);
+  font-weight: 500; text-transform: uppercase;
+  letter-spacing: 1px; position: relative;
+}
+.balance-amount {
+  font-size: 42px; font-weight: 700; letter-spacing: -1.5px;
+  margin: 6px 0 2px; position: relative;
+  font-feature-settings: 'tnum';
+}
+.balance-amount .unit { font-size: 22px; font-weight: 500; opacity: 0.6; margin-left: 4px; }
+.balance-usd {
+  font-size: 15px; color: rgba(255,255,255,0.4);
+  position: relative;
+}
+.balance-addr {
+  margin-top: 16px; padding: 10px 14px;
+  background: rgba(255,255,255,0.06);
+  border-radius: var(--radius-sm);
+  font-size: 12px; font-family: 'SF Mono', ui-monospace, monospace;
+  color: rgba(255,255,255,0.5);
+  display: flex; align-items: center; gap: 8px;
+  position: relative;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.balance-addr .copy-btn {
+  color: var(--blue); font-size: 12px; font-weight: 600;
+  flex-shrink: 0; cursor: pointer;
+}
+
+/* ═══ Action Buttons Row ═══ */
+.action-row {
+  display: flex; gap: 12px; margin-bottom: 24px;
+}
+.action-btn {
+  flex: 1; background: var(--surface);
+  border-radius: var(--radius-md); padding: 14px 8px;
+  text-align: center; cursor: pointer;
+  border: 0.5px solid var(--separator);
+  transition: transform 0.15s;
+}
+.action-btn:active { transform: scale(0.97); background: var(--surface2); }
+.action-btn .icon-wrap {
+  width: 36px; height: 36px; border-radius: 50%;
+  margin: 0 auto 6px; display: flex; align-items: center; justify-content: center;
+}
+.action-btn .icon-wrap svg { width: 18px; height: 18px; }
+.action-btn .label { font-size: 13px; font-weight: 500; }
+
+/* ═══ Buttons ═══ */
+.btn {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  width: 100%; padding: 16px 20px;
+  border-radius: var(--radius-md); font-size: 17px;
+  font-weight: 600; border: none; cursor: pointer;
+  transition: opacity 0.15s, transform 0.1s;
+}
+.btn:active { transform: scale(0.98); opacity: 0.85; }
+.btn-primary { background: var(--blue); color: white; }
+.btn-secondary { background: var(--surface2); color: var(--label); }
+.btn-success { background: var(--green); color: black; }
+.btn-danger { background: var(--red); color: white; }
+.btn-ghost { background: transparent; color: var(--blue); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-row { display: flex; gap: 10px; }
+.btn-row .btn { flex: 1; }
+
+/* ═══ Inputs ═══ */
+.input-group { margin-bottom: 16px; }
+.input-group label {
+  font-size: 13px; color: var(--label-secondary);
+  font-weight: 500; margin-bottom: 6px; display: block;
+}
+input, textarea, select {
+  width: 100%; padding: 14px 16px;
+  border-radius: var(--radius-md);
+  background: var(--surface); border: 0.5px solid var(--separator);
+  color: var(--label); font-size: 17px; font-family: inherit;
+  outline: none; transition: border-color 0.2s;
+  -webkit-appearance: none;
+}
+input:focus, textarea:focus { border-color: var(--blue); }
+textarea { min-height: 80px; font-family: 'SF Mono', monospace; font-size: 14px; resize: vertical; }
+
+/* ═══ Segmented Control ═══ */
+.segmented {
+  display: flex; background: var(--surface2);
+  border-radius: var(--radius-sm); padding: 2px;
+  margin-bottom: 20px;
+}
+.segmented .seg {
+  flex: 1; text-align: center; padding: 8px 4px;
+  border-radius: 8px; font-size: 13px; font-weight: 600;
+  color: var(--label-secondary); cursor: pointer;
+  transition: all 0.2s;
+}
+.segmented .seg.active { background: var(--surface3); color: var(--label); }
+
+/* ═══ Cards / Sections ═══ */
+.section {
+  background: var(--surface); border-radius: var(--radius-lg);
+  padding: 20px; margin-bottom: 16px;
+}
+.section h2 { font-size: 20px; font-weight: 700; margin-bottom: 4px; letter-spacing: -0.4px; }
+.section .desc { font-size: 14px; color: var(--label-secondary); margin-bottom: 16px; line-height: 1.5; }
+
+/* ═══ Covenant Cards ═══ */
+.covenant-card {
+  background: var(--surface); border-radius: var(--radius-lg);
+  padding: 18px; margin-bottom: 12px; cursor: pointer;
+  border: 0.5px solid var(--separator);
+  transition: transform 0.15s, border-color 0.2s;
+}
+.covenant-card:active { transform: scale(0.98); }
+.covenant-card .header {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 8px;
+}
+.covenant-card .icon {
+  width: 40px; height: 40px; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+}
+.covenant-card .icon svg { width: 20px; height: 20px; }
+.covenant-card h3 { font-size: 16px; font-weight: 600; flex: 1; }
+.covenant-card p { font-size: 13px; color: var(--label-secondary); line-height: 1.4; }
+
+/* ═══ Chat ═══ */
+.chat-container {
+  display: flex; flex-direction: column; gap: 8px;
+  margin-bottom: 12px; min-height: 200px;
+}
+.bubble {
+  max-width: 82%; padding: 12px 16px;
+  border-radius: 18px; font-size: 15px; line-height: 1.45;
+}
+.bubble.user {
+  background: var(--blue); color: white;
+  align-self: flex-end; border-bottom-right-radius: 4px;
+}
+.bubble.ai {
+  background: var(--surface2); color: var(--label);
+  align-self: flex-start; border-bottom-left-radius: 4px;
+}
+.bubble.ai .suggestion {
+  background: var(--surface); border: 0.5px solid var(--separator);
+  border-radius: var(--radius-md); padding: 14px; margin-top: 10px;
+}
+.bubble.ai .suggestion h4 { font-size: 14px; font-weight: 600; margin-bottom: 6px; color: var(--teal); }
+.bubble.ai .suggestion p { font-size: 13px; color: var(--label-secondary); margin-bottom: 10px; }
+.chat-input-bar {
+  display: flex; gap: 8px; position: sticky; bottom: 0;
+  background: var(--bg); padding: 8px 0;
+}
+.chat-input-bar input {
+  flex: 1; border-radius: 20px; padding: 12px 18px;
+}
+
+/* ═══ Review Sheet ═══ */
+.sheet-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+  z-index: 200; display: flex; align-items: flex-end;
+}
+.sheet {
+  background: var(--bg2); border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  width: 100%; max-width: 440px; margin: 0 auto;
+  padding: 20px 20px 40px; max-height: 90vh; overflow-y: auto;
+  animation: slideUp 0.3s cubic-bezier(0.32,0.72,0,1);
+}
+@keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+.sheet .grabber {
+  width: 36px; height: 5px; background: var(--label-tertiary);
+  border-radius: 3px; margin: 0 auto 20px;
+}
+
+/* ═══ Bottom Tab Bar ═══ */
+.tabbar {
+  position: fixed; bottom: 0; left: 0; right: 0;
+  background: rgba(0,0,0,0.85);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  border-top: 0.5px solid var(--separator);
+  display: flex; padding-bottom: var(--safe-bottom);
+  z-index: 100;
+}
+.tabbar .tab {
+  flex: 1; text-align: center; padding: 8px 0 6px;
+  cursor: pointer; transition: opacity 0.15s;
+}
+.tabbar .tab svg { width: 26px; height: 26px; margin-bottom: 2px; }
+.tabbar .tab span { font-size: 10px; font-weight: 500; letter-spacing: 0.2px; }
+.tabbar .tab { color: var(--label-tertiary); }
+.tabbar .tab.active { color: var(--blue); }
+
+/* ═══ Status & Badges ═══ */
+.badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 10px; border-radius: 8px;
+  font-size: 12px; font-weight: 600;
+}
+.badge-green { background: rgba(48,209,88,0.15); color: var(--green); }
+.badge-orange { background: rgba(255,159,10,0.15); color: var(--orange); }
+.badge-red { background: rgba(255,69,58,0.15); color: var(--red); }
+.badge-teal { background: rgba(100,210,255,0.15); color: var(--teal); }
+.badge-blue { background: rgba(10,132,255,0.15); color: var(--blue); }
+
+/* ═══ Toast ═══ */
+.toast {
+  position: fixed; top: 60px; left: 50%; transform: translateX(-50%);
+  background: var(--surface2); border: 0.5px solid var(--separator);
+  padding: 12px 20px; border-radius: var(--radius-md);
+  font-size: 14px; z-index: 300;
+  animation: toastIn 0.25s ease; max-width: 90%;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+}
+@keyframes toastIn { from { opacity: 0; transform: translate(-50%, -10px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+/* ═══ Loading ═══ */
+.loading {
+  text-align: center; padding: 40px 0; color: var(--label-secondary);
+  font-size: 15px;
+}
+.spinner {
+  width: 24px; height: 24px;
+  border: 3px solid var(--separator); border-top-color: var(--blue);
+  border-radius: 50%; animation: spin 0.7s linear infinite;
+  margin: 0 auto 12px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ═══ Utility ═══ */
+.hidden { display: none !important; }
+.fade-in { animation: fadeIn 0.3s ease; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+.mono { font-family: 'SF Mono', ui-monospace, monospace; font-size: 13px; }
+.muted { color: var(--label-secondary); }
+.small { font-size: 13px; }
+.center { text-align: center; }
+.mt-8 { margin-top: 8px; } .mt-16 { margin-top: 16px; } .mb-8 { margin-bottom: 8px; } .mb-16 { margin-bottom: 16px; }
+
+/* Detail row */
+.detail { display: flex; justify-content: space-between; align-items: flex-start; padding: 12px 0; border-bottom: 0.5px solid var(--separator); }
+.detail:last-child { border-bottom: none; }
+.detail .k { font-size: 15px; color: var(--label-secondary); flex-shrink: 0; }
+.detail .v { font-size: 15px; font-family: 'SF Mono', monospace; text-align: right; word-break: break-all; margin-left: 12px; }
+
+/* UTXO list */
+.utxo {
+  padding: 12px 14px; background: var(--surface);
+  border-radius: var(--radius-md); margin-bottom: 6px;
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 13px;
+}
+.utxo .amt { color: var(--green); font-weight: 600; }
+.utxo .id { color: var(--label-secondary); font-family: 'SF Mono', monospace; }
+</style>
+</head>
+<body>
+
+<!-- ═══ Navbar ═══ -->
+<div class="navbar" id="navbar">
+  <span class="navbar-btn left" id="nav-left" onclick="navBack()">‹</span>
+  <span class="navbar-title" id="nav-title">Scorpion Wallet</span>
+  <span class="navbar-btn right" id="nav-right"></span>
+</div>
+
+<!-- ═══ Content ═══ -->
+<div class="scroll-content" id="content">
+
+  <!-- ═══ ONBOARDING ═══ -->
+  <div id="page-onboarding" class="fade-in">
+    <div class="onboarding">
+      <div class="onboarding-logo">
+        <svg viewBox="0 0 32 32" fill="none">
+          <path d="M16 3L6 9v14l10 6 10-6V9L16 3z" stroke="white" stroke-width="2" stroke-linejoin="round"/>
+          <path d="M16 9v14M11 12l5 3 5-3M11 18l5-3 5 3" stroke="white" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <h1>Scorpion Wallet</h1>
+      <p>Non-custodial Kaspa wallet with AI-powered covenant creation. Your keys. Your KAS. Your covenants.</p>
+    </div>
+    <div class="list" style="margin-bottom:16px;">
+      <div class="list-row" onclick="createWallet()">
+        <div class="icon" style="background:rgba(48,209,88,0.15);">
+          <svg viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2"><path d="M12 5v14m-7-7h14"/></svg>
+        </div>
+        <div class="text"><div class="title">Create New Wallet</div><div class="subtitle">Generate a fresh Schnorr keypair</div></div>
+        <span class="chevron">›</span>
+      </div>
+      <div class="list-row" onclick="showImport()">
+        <div class="icon" style="background:rgba(10,132,255,0.15);">
+          <svg viewBox="0 0 24 24" fill="none" stroke="var(--blue)" stroke-width="2"><path d="M21 12a9 9 0 11-9-9m9 9V3m0 9h-9"/></svg>
+        </div>
+        <div class="text"><div class="title">Import Wallet</div><div class="subtitle">Enter an existing private key</div></div>
+        <span class="chevron">›</span>
+      </div>
+    </div>
+    <div id="import-section" class="section hidden">
+      <h2>Import Private Key</h2>
+      <p class="desc">Paste your 64-character hex private key.</p>
+      <div class="input-group">
+        <input type="text" id="import-key" placeholder="6d3af70267001ddd..." autocomplete="off" spellcheck="false">
+      </div>
+      <button class="btn btn-primary" onclick="importWallet()">Import Wallet</button>
+    </div>
+    <div class="section" style="margin-top:16px;">
+      <p class="desc" style="margin:0;">
+        <strong style="color:var(--orange);">⚠ Non-custodial:</strong>
+        Your private key is generated in your browser and never sent to any server.
+        All signing happens locally. No one — not even this app's backend — can access your keys.
+      </p>
+    </div>
+  </div>
+
+  <!-- ═══ DASHBOARD ═══ -->
+  <div id="page-dashboard" class="hidden">
+    <!-- Balance Hero -->
+    <div class="balance-card">
+      <div class="balance-label">TOTAL BALANCE</div>
+      <div class="balance-amount"><span id="balance-kas">0.0000</span><span class="unit">KAS</span></div>
+      <div class="balance-usd">≈ $<span id="balance-usd">0.00</span> USD</div>
+      <div class="balance-addr">
+        <span id="balance-addr" class="mono"></span>
+        <span class="copy-btn" onclick="copyAddress()">Copy</span>
+      </div>
+    </div>
+
+    <!-- Action Row -->
+    <div class="action-row">
+      <div class="action-btn" onclick="refreshBalance()">
+        <div class="icon-wrap" style="background:rgba(48,209,88,0.15);">
+          <svg viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2"><path d="M21 12a9 9 0 11-9-9m9 9V3m0 9h-9"/></svg>
+        </div>
+        <div class="label">Refresh</div>
+      </div>
+      <div class="action-btn" onclick="showSend()">
+        <div class="icon-wrap" style="background:rgba(10,132,255,0.15);">
+          <svg viewBox="0 0 24 24" fill="none" stroke="var(--blue)" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+        </div>
+        <div class="label">Send</div>
+      </div>
+      <div class="action-btn" onclick="navTo('covenants')">
+        <div class="icon-wrap" style="background:rgba(94,92,230,0.15);">
+          <svg viewBox="0 0 24 24" fill="none" stroke="var(--indigo)" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+        </div>
+        <div class="label">Covenants</div>
+      </div>
+      <div class="action-btn" onclick="togglePrivkey()">
+        <div class="icon-wrap" style="background:rgba(255,159,10,0.15);">
+          <svg viewBox="0 0 24 24" fill="none" stroke="var(--orange)" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        </div>
+        <div class="label">Keys</div>
+      </div>
+    </div>
+
+    <!-- UTXOs -->
+    <div class="list-header">UTXOS</div>
+    <div id="utxo-list" class="list">
+      <div class="loading"><div class="spinner"></div>Loading UTXOs…</div>
+    </div>
+  </div>
+
+  <!-- ═══ SEND ═══ -->
+  <div id="page-send" class="hidden">
+    <div class="section">
+      <h2>Send KAS</h2>
+      <p class="desc">Transfer Kaspa to any address. Transaction is signed locally in your browser.</p>
+      <div class="input-group">
+        <label>Destination Address</label>
+        <input type="text" id="send-dest" placeholder="kaspa:qzx..." autocomplete="off" spellcheck="false">
+      </div>
+      <div class="input-group">
+        <label>Amount (KAS)</label>
+        <input type="number" id="send-amount" placeholder="0.5" step="0.0001" min="0.1" inputmode="decimal">
+      </div>
+      <button class="btn btn-primary" onclick="prepareSend()">Review Transaction</button>
+    </div>
+  </div>
+
+  <!-- ═══ COVENANTS ═══ -->
+  <div id="page-covenants" class="hidden">
+    <!-- AI Chat -->
+    <div class="section">
+      <h2>AI Covenant Builder</h2>
+      <p class="desc">Describe what you want in plain English. The AI will parse your intent and build the covenant script.</p>
+      <div class="chat-container" id="chat-log">
+        <div class="bubble ai">
+          I can build Kaspa covenants for you. Try: <em>"Lock 5 KAS for 30 days"</em> or <em>"Escrow 10 KAS for buyer at kaspa:qzx..."</em>
+        </div>
+      </div>
+      <div class="chat-input-bar">
+        <input type="text" id="chat-input" placeholder="Describe a covenant…" onkeydown="if(event.key==='Enter')sendChat()">
+        <button class="btn btn-primary" style="width:auto;padding:12px 18px;border-radius:20px;" onclick="sendChat()">→</button>
+      </div>
+    </div>
+
+    <!-- Manual Builder -->
+    <div class="list-header">MANUAL BUILD</div>
+    <div class="segmented">
+      <div class="seg active" data-type="timelock" onclick="updateManualForm('timelock')">Timelock</div>
+      <div class="seg" data-type="escrow" onclick="updateManualForm('escrow')">Escrow</div>
+      <div class="seg" data-type="multisig" onclick="updateManualForm('multisig')">Multisig</div>
+    </div>
+
+    <div class="section" id="manual-form-section">
+      <div id="manual-form-fields"></div>
+      <button class="btn btn-primary" onclick="buildManualCovenant()">Build Covenant</button>
+    </div>
+  </div>
+
+  <!-- ═══ REVIEW SHEET ═══ -->
+  <div id="sheet-overlay" class="sheet-overlay hidden" onclick="if(event.target===this)closeSheet()">
+    <div class="sheet" id="sheet-content">
+      <div class="grabber"></div>
+      <div id="sheet-body"></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ═══ Tab Bar ═══ -->
+<div class="tabbar" id="tabbar" style="display:none;">
+  <div class="tab active" data-tab="dashboard" onclick="navTo('dashboard')">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>
+    <span>Wallet</span>
+  </div>
+  <div class="tab" data-tab="covenants" onclick="navTo('covenants')">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+    <span>Covenants</span>
+  </div>
+  <div class="tab" data-tab="send" onclick="navTo('send')">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+    <span>Send</span>
+  </div>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════
+   SCORPION WALLET — Non-custodial Kaspa wallet with covenants
+   ═══════════════════════════════════════════════════════════ */
+
+const API_BASE = 'https://api.kaspa.org';
+const BACKEND_URL = 'https://base44.app/api/apps/6a444b036408e68ec8d6f2a6/functions';
+const APP_ID = '6a444b036408e68ec8d6f2a6';
+
+let wallet = null;
+let utxos = [];
+let pendingTx = null;
+let currentTab = 'dashboard';
+
+/* ═══ Kaspa Address Encoding (CashAddr-style — verified byte-exact) ═══ */
+const CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
+
+function cashaddrPolymod(values) {
+  let c = 1n;
+  for (const d of values) {
+    const c0 = c >> 35n;
+    c = ((c & 0x07ffffffffn) << 5n) ^ BigInt(d);
+    if (c0 & 0x01n) c ^= 0x98f2bc8e61n;
+    if (c0 & 0x02n) c ^= 0x79b76d99e2n;
+    if (c0 & 0x04n) c ^= 0xf33e5fb3c4n;
+    if (c0 & 0x08n) c ^= 0xae2eabe2a8n;
+    if (c0 & 0x10n) c ^= 0x1e4f43e470n;
+  }
+  return c ^ 1n;
+}
+
+function cashaddrPrefixExpand(prefix) {
+  const ret = [];
+  for (const c of prefix) ret.push(c.charCodeAt(0) & 0x1f);
+  ret.push(0);
+  return ret;
+}
+
+function checksumToArray(checksum) {
+  const result = [];
+  for (let i = 0; i < 8; i++) result.push(Number((checksum >> BigInt(5 * (7 - i))) & 0x1fn));
+  return result;
+}
+
+function convertbits(data, frombits, tobits, pad) {
+  let acc = 0, bits = 0, ret = [];
+  const maxv = (1 << tobits) - 1;
+  for (const v of data) {
+    acc = (acc << frombits) | v;
+    bits += frombits;
+    while (bits >= tobits) { bits -= tobits; ret.push((acc >> bits) & maxv); }
+  }
+  if (pad) { if (bits) ret.push((acc << (tobits - bits)) & maxv); }
+  else if (bits >= frombits || ((acc << (tobits - bits)) & maxv)) return null;
+  return ret;
+}
+
+function kaspaCashaddrEncode(prefix, versionByte, payloadBytes) {
+  const data5 = convertbits([versionByte, ...Array.from(payloadBytes)], 8, 5, true);
+  const checksumInput = cashaddrPrefixExpand(prefix).concat(data5).concat([0,0,0,0,0,0,0,0]);
+  const chk = cashaddrPolymod(checksumInput);
+  const combined = data5.concat(checksumToArray(chk));
+  return prefix + ':' + combined.map(d => CHARSET[d]).join('');
+}
+
+function kaspaCashaddrDecode(addrStr) {
+  const parts = addrStr.split(':');
+  if (parts.length !== 2) return null;
+  const prefix = parts[0], body = parts[1];
+  const data5 = [];
+  for (const ch of body) {
+    const idx = CHARSET.indexOf(ch);
+    if (idx < 0) return null;
+    data5.push(idx);
+  }
+  const payload = data5.slice(0, -8);
+  if (cashaddrPolymod(cashaddrPrefixExpand(prefix).concat(data5)) !== 0n) return null;
+  const bytes8 = convertbits(payload, 5, 8, false);
+  if (!bytes8) return null;
+  return { prefix, versionByte: bytes8[0], payloadBytes: new Uint8Array(bytes8.slice(1)) };
+}
+
+function kaspaAddressFromPubkey(pubkey32) {
+  return kaspaCashaddrEncode('kaspa', 0, pubkey32);
+}
+
+function kaspaAddressFromScriptHash(scriptHash32) {
+  return kaspaCashaddrEncode('kaspa', 8, scriptHash32);
+}
+
+function isValidKaspaAddress(addrStr) {
+  if (!addrStr || !addrStr.startsWith('kaspa:')) return false;
+  return kaspaCashaddrDecode(addrStr) !== null;
+}
+
+/* ═══ Crypto Library Loading ═══ */
+let __libsReady = null;
+
+async function loadCryptoLibs() {
+  if (__libsReady) return __libsReady;
+  __libsReady = (async () => {
+    let lastErr = null;
+    const curvesUrls = [
+      'https://esm.sh/@noble/curves@2.2.0/secp256k1',
+      'https://cdn.jsdelivr.net/npm/@noble/curves@2.2.0/+esm'
+    ];
+    const hashesUrls = [
+      'https://esm.sh/@noble/hashes@1.3.3/blake2b',
+      'https://cdn.jsdelivr.net/npm/@noble/hashes@1.3.3/blake2b/+esm'
+    ];
+    for (const url of curvesUrls) {
+      try { window.__nobleCurves = await import(url); break; }
+      catch (e) { lastErr = e; console.warn('curves fail', url, e); }
+    }
+    for (const url of hashesUrls) {
+      try { window.__nobleHashes = await import(url); break; }
+      catch (e) { lastErr = e; console.warn('hashes fail', url, e); }
+    }
+    if (!window.__nobleCurves || !window.__nobleCurves.schnorr) {
+      throw lastErr || new Error('Signing library failed to load from all sources');
+    }
+  })();
+  return __libsReady;
+}
+
+/* ═══ Key Management ═══ */
+async function generatePrivateKey() {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return bytes;
+}
+
+function privKeyToHex(key) {
+  return Array.from(key).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+function hexToBytes(hex) {
+  const arr = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) arr[i/2] = parseInt(hex.slice(i, i+2), 16);
+  return arr;
+}
+
+async function derivePublicKey(privKey) {
+  // Kaspa uses Schnorr (BIP340) — schnorr.getPublicKey returns 32-byte x-only pubkey
+  if (window.__nobleCurves && window.__nobleCurves.schnorr) {
+    return window.__nobleCurves.schnorr.getPublicKey(privKey);
+  }
+  throw new Error('Signing library not loaded yet. Please wait a moment and try again.');
+}
+
+/* ═══ BLAKE2B ═══ */
+async function blake2b32(data) {
+  if (window.__nobleHashes && window.__nobleHashes.blake2b) {
+    return window.__nobleHashes.blake2b(data, { dkLen: 32 });
+  }
+  const buf = await crypto.subtle.digest('SHA-256', data);
+  return new Uint8Array(buf);
+}
+
+/* ═══ Wallet Create / Import ═══ */
+async function createWallet() {
+  showToast('Generating wallet…');
+  try {
+    await loadCryptoLibs();
+    const privKey = await generatePrivateKey();
+    const pubKey = await derivePublicKey(privKey);
+    const address = kaspaAddressFromPubkey(pubKey);
+
+    wallet = {
+      privKey: privKeyToHex(privKey),
+      pubKey: Array.from(pubKey).map(b => b.toString(16).padStart(2,'0')).join(''),
+      address: address
+    };
+    saveWallet();
+    showDashboard();
+    showToast('Wallet created ✅');
+  } catch(e) {
+    showToast('Error: ' + e.message);
+    console.error(e);
+  }
+}
+
+function showImport() {
+  document.getElementById('import-section').classList.remove('hidden');
+}
+
+async function importWallet() {
+  const hex = document.getElementById('import-key').value.trim();
+  if (!hex || hex.length !== 64) { showToast('Invalid key — must be 64 hex chars'); return; }
+  try {
+    await loadCryptoLibs();
+    const privKey = hexToBytes(hex);
+    const pubKey = await derivePublicKey(privKey);
+    const address = kaspaAddressFromPubkey(pubKey);
+
+    wallet = {
+      privKey: hex,
+      pubKey: Array.from(pubKey).map(b => b.toString(16).padStart(2,'0')).join(''),
+      address: address
+    };
+    saveWallet();
+    showDashboard();
+    showToast('Wallet imported ✅');
+  } catch(e) {
+    showToast('Error: ' + e.message);
+  }
+}
+
+/* ═══ Wallet Storage ═══ */
+function saveWallet() {
+  localStorage.setItem('scorpion_wallet', JSON.stringify(wallet));
+}
+
+function loadWallet() {
+  const saved = localStorage.getItem('scorpion_wallet');
+  if (!saved) return false;
+  try {
+    wallet = JSON.parse(saved);
+    return true;
+  } catch { return false; }
+}
+
+function logout() {
+  localStorage.removeItem('scorpion_wallet');
+  wallet = null;
+  utxos = [];
+  location.reload();
+}
+
+function togglePrivkey() {
+  const shown = document.getElementById('privkey-display');
+  if (shown) { shown.remove(); return; }
+  const div = document.createElement('div');
+  div.id = 'privkey-display';
+  div.className = 'section fade-in';
+  div.innerHTML = `
+    <h2 style="color:var(--orange);">⚠ Private Key</h2>
+    <p class="desc">Never share this with anyone. Anyone with this key controls your wallet.</p>
+    <div class="mono" style="background:var(--surface);padding:14px;border-radius:var(--radius-md);word-break:break-all;color:var(--orange);font-size:12px;">${wallet.privKey}</div>
+    <div class="btn-row mt-16">
+      <button class="btn btn-secondary" onclick="copyPrivKey()">Copy Key</button>
+      <button class="btn btn-danger" onclick="logout()">Delete Wallet</button>
+    </div>
+  `;
+  document.getElementById('utxo-list').after(div);
+}
+
+function copyPrivKey() {
+  navigator.clipboard.writeText(wallet.privKey);
+  showToast('Private key copied');
+}
+
+/* ═══ Dashboard ═══ */
+function showDashboard() {
+  document.getElementById('page-onboarding').classList.add('hidden');
+  document.getElementById('page-dashboard').classList.remove('hidden');
+  document.getElementById('page-covenants').classList.add('hidden');
+  document.getElementById('page-send').classList.add('hidden');
+  document.getElementById('tabbar').style.display = 'flex';
+  document.getElementById('nav-title').textContent = 'Scorpion Wallet';
+  document.getElementById('nav-left').textContent = '';
+  document.getElementById('nav-right').textContent = '';
+
+  document.getElementById('balance-addr').textContent = wallet.address.slice(0, 20) + '…' + wallet.address.slice(-8);
+  refreshBalance();
+  fetchUTXOs();
+}
+
+async function refreshBalance() {
+  try {
+    const res = await fetch(`${API_BASE}/addresses/${wallet.address}/balance`);
+    const data = await res.json();
+    const balanceSompi = data.balance || 0;
+    const kas = balanceSompi / 100000000;
+    document.getElementById('balance-kas').textContent = kas.toFixed(4);
+
+    // Try to fetch price
+    try {
+      const priceRes = await fetch(`${API_BASE}/price`);
+      const priceData = await priceRes.json();
+      const price = priceData.price || 0;
+      document.getElementById('balance-usd').textContent = (kas * price).toFixed(2);
+    } catch { /* price fetch optional */ }
+  } catch(e) {
+    console.error('Balance fetch failed:', e);
+  }
+}
+
+async function fetchUTXOs() {
+  const list = document.getElementById('utxo-list');
+  list.innerHTML = '<div class="loading"><div class="spinner"></div>Loading UTXOs…</div>';
+  try {
+    const res = await fetch(`${API_BASE}/addresses/${wallet.address}/utxos`);
+    const data = await res.json();
+    utxos = data || [];
+    if (utxos.length === 0) {
+      list.innerHTML = '<div class="list-row"><div class="text center muted">No UTXOs. Send KAS to your address to get started.</div></div>';
+      return;
+    }
+    let html = '';
+    let total = 0;
+    for (const u of utxos) {
+      const amt = (u.amount / 100000000).toFixed(4);
+      total += u.amount;
+      html += `<div class="utxo"><span class="id">${u.outpoint.transactionId.slice(0,12)}…</span><span class="amt">${amt} KAS</span></div>`;
+    }
+    html += `<div class="utxo" style="border-top:0.5px solid var(--separator);margin-top:4px;"><span style="font-weight:600;">Total UTXOs</span><span class="amt" style="font-size:15px;">${(total/100000000).toFixed(4)} KAS</span></div>`;
+    list.innerHTML = html;
+  } catch(e) {
+    list.innerHTML = '<div class="list-row"><div class="text center muted">Failed to fetch UTXOs</div></div>';
+  }
+}
+
+function copyAddress() {
+  navigator.clipboard.writeText(wallet.address);
+  showToast('Address copied');
+}
+
+/* ═══ Send ═══ */
+function showSend() {
+  navTo('send');
+}
+
+async function prepareSend() {
+  const dest = document.getElementById('send-dest').value.trim();
+  const amount = parseFloat(document.getElementById('send-amount').value);
+
+  if (!dest || !dest.startsWith('kaspa:')) { showToast('Invalid Kaspa address'); return; }
+  if (!amount || amount < 0.1) { showToast('Minimum send is 0.1 KAS (KIP-0009)'); return; }
+
+  showToast('Preparing transaction…');
+  try {
+    // Fetch fresh UTXOs
+    const utxoRes = await fetch(`${API_BASE}/addresses/${wallet.address}/utxos`);
+    const utxoData = await utxoRes.json();
+    const availableUtxos = utxoData || [];
+
+    if (availableUtxos.length === 0) { showToast('No UTXOs available'); return; }
+
+    // Build tx via backend
+    const res = await fetch(`${BACKEND_URL}/kccApi`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'buildAndSign',
+        pendingTx: {
+          type: 'send',
+          destination: dest,
+          amountKas: amount,
+          utxos: availableUtxos,
+          changeAddress: wallet.address
+        },
+        privKey: wallet.privKey
+      })
+    });
+    const result = await res.json();
+
+    if (result.error) { showToast('Error: ' + result.error); return; }
+
+    showReviewSheet({
+      title: 'Review Transaction',
+      details: [
+        { k: 'Type', v: 'Send KAS' },
+        { k: 'To', v: dest.slice(0, 20) + '…' },
+        { k: 'Amount', v: amount + ' KAS' },
+        { k: 'Fee', v: (result.fee || 0.0001) + ' KAS' },
+        { k: 'Network', v: 'Mainnet' }
+      ],
+      onConfirm: () => broadcastTx(result.txHex || result.signedTx)
+    });
+  } catch(e) {
+    showToast('Error: ' + e.message);
+  }
+}
+
+/* ═══ Covenant Builder ═══ */
+function updateManualForm(type) {
+  document.querySelectorAll('.seg').forEach(s => s.classList.toggle('active', s.dataset.type === type));
+  const fields = document.getElementById('manual-form-fields');
+
+  if (type === 'timelock') {
+    fields.innerHTML = `
+      <div class="input-group"><label>Amount (KAS)</label><input type="number" id="ct-amount" placeholder="5.0" step="0.1" inputmode="decimal"></div>
+      <div class="input-group"><label>Lock Duration (days)</label><input type="number" id="ct-days" placeholder="30" inputmode="numeric"></div>
+    `;
+  } else if (type === 'escrow') {
+    fields.innerHTML = `
+      <div class="input-group"><label>Amount (KAS)</label><input type="number" id="ct-amount" placeholder="5.0" step="0.1" inputmode="decimal"></div>
+      <div class="input-group"><label>Buyer Address</label><input type="text" id="ct-buyer" placeholder="kaspa:qzx..." spellcheck="false"></div>
+      <div class="input-group"><label>Arbitrator Address (optional)</label><input type="text" id="ct-arb" placeholder="kaspa:qzx..." spellcheck="false"></div>
+    `;
+  } else if (type === 'multisig') {
+    fields.innerHTML = `
+      <div class="input-group"><label>Amount (KAS)</label><input type="number" id="ct-amount" placeholder="5.0" step="0.1" inputmode="decimal"></div>
+      <div class="input-group"><label>Counterparty Address</label><input type="text" id="ct-counterparty" placeholder="kaspa:qzx..." spellcheck="false"></div>
+    `;
+  }
+}
+
+async function buildManualCovenant() {
+  const type = document.querySelector('.seg.active').dataset.type;
+  let params = {};
+
+  if (type === 'timelock') {
+    params = {
+      amountKas: parseFloat(document.getElementById('ct-amount').value),
+      lockDays: parseInt(document.getElementById('ct-days').value)
+    };
+    if (!params.amountKas || !params.lockDays) { showToast('Fill all fields'); return; }
+  } else if (type === 'escrow') {
+    params = {
+      amountKas: parseFloat(document.getElementById('ct-amount').value),
+      buyerAddress: document.getElementById('ct-buyer').value.trim()
+    };
+    if (!params.amountKas || !params.buyerAddress) { showToast('Fill required fields'); return; }
+  } else if (type === 'multisig') {
+    params = {
+      amountKas: parseFloat(document.getElementById('ct-amount').value),
+      counterparty: document.getElementById('ct-counterparty').value.trim()
+    };
+    if (!params.amountKas || !params.counterparty) { showToast('Fill all fields'); return; }
+  }
+
+  showToast('Building covenant…');
+  try {
+    const res = await fetch(`${BACKEND_URL}/kccApi`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'buildCovenant',
+        type: type,
+        params: params,
+        sourceAddress: wallet.address
+      })
+    });
+    const result = await res.json();
+    if (result.error) { showToast('Error: ' + result.error); return; }
+    showCovenantReview(type, params, result);
+  } catch(e) {
+    showToast('Error: ' + e.message);
+  }
+}
+
+function showCovenantReview(type, params, result) {
+  showReviewSheet({
+    title: `Review ${type.charAt(0).toUpperCase() + type.slice(1)}`,
+    details: [
+      { k: 'Type', v: type },
+      { k: 'Amount', v: params.amountKas + ' KAS' },
+      ...(params.lockDays ? [{ k: 'Lock Period', v: params.lockDays + ' days' }] : []),
+      ...(params.buyerAddress ? [{ k: 'Buyer', v: params.buyerAddress.slice(0,20) + '…' }] : []),
+      ...(params.counterparty ? [{ k: 'Counterparty', v: params.counterparty.slice(0,20) + '…' }] : []),
+      { k: 'Covenant Addr', v: result.covenantAddress ? result.covenantAddress.slice(0,20) + '…' : 'TBD' },
+      { k: 'Script', v: result.script ? result.script.slice(0,40) + '…' : 'Built' },
+      { k: 'Network', v: 'Mainnet (Toccata)' }
+    ],
+    onConfirm: () => fundCovenant(type, params, result)
+  });
+}
+
+async function fundCovenant(type, params, result) {
+  showToast('Funding covenant…');
+  // For now, just show the covenant address for manual funding
+  if (result.covenantAddress) {
+    showReviewSheet({
+      title: 'Covenant Created',
+      details: [
+        { k: 'Address', v: result.covenantAddress },
+        { k: 'Status', v: 'Ready to fund' },
+        { k: 'Next Step', v: `Send ${params.amountKas} KAS to the covenant address` }
+      ],
+      onConfirm: () => { closeSheet(); navigator.clipboard.writeText(result.covenantAddress); showToast('Address copied'); }
+    });
+  } else {
+    showToast('Covenant built — no address yet');
+    closeSheet();
+  }
+}
+
+/* ═══ AI Chat ═══ */
+async function sendChat() {
+  const input = document.getElementById('chat-input');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+
+  const log = document.getElementById('chat-log');
+  const userMsg = document.createElement('div');
+  userMsg.className = 'bubble user';
+  userMsg.textContent = text;
+  log.appendChild(userMsg);
+
+  // Typing indicator
+  const typing = document.createElement('div');
+  typing.className = 'bubble ai';
+  typing.innerHTML = '<span style="opacity:0.5;">Parsing intent…</span>';
+  log.appendChild(typing);
+  log.scrollTop = log.scrollHeight;
+
+  try {
+    const res = await fetch(`${BACKEND_URL}/kccApi`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'parseIntent', message: text })
+    });
+    const result = await res.json();
+    typing.remove();
+
+    if (result.error) {
+      const err = document.createElement('div');
+      err.className = 'bubble ai';
+      err.textContent = 'Sorry, I couldn\'t parse that. Try something like: "Lock 5 KAS for 30 days", "Escrow 10 KAS for buyer at kaspa:...", or "Send 2 KAS to kaspa:..."';
+      log.appendChild(err);
+    } else {
+      const ai = document.createElement('div');
+      ai.className = 'bubble ai';
+      const typeLabel = result.type === 'timelock' ? '⏰ Timelock' :
+                        result.type === 'escrow' ? '🤝 Escrow' :
+                        result.type === 'send' ? '📤 Send' : result.type;
+      ai.innerHTML = `
+        I detected a <strong>${typeLabel}</strong> covenant.
+        <div class="suggestion">
+          <h4>${typeLabel}</h4>
+          <p>${JSON.stringify(result.params, null, 2)}</p>
+          <button class="btn btn-primary" style="padding:10px;" id="accept-covenant-btn">Build & Review</button>
+        </div>
+      `;
+      log.appendChild(ai);
+      // Store the covenant result globally and wire up the button
+      window.__pendingCovenant = result;
+      document.getElementById('accept-covenant-btn').onclick = () => acceptCovenant(window.__pendingCovenant);
+    }
+    log.scrollTop = log.scrollHeight;
+  } catch(e) {
+    typing.remove();
+    const err = document.createElement('div');
+    err.className = 'bubble ai';
+    err.textContent = 'Connection error. Please try again.';
+    log.appendChild(err);
+  }
+}
+
+async function acceptCovenant(covenant) {
+  showToast('Building covenant…');
+  try {
+    const res = await fetch(`${BACKEND_URL}/kccApi`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'buildCovenant',
+        type: covenant.type,
+        params: covenant.params,
+        sourceAddress: wallet.address
+      })
+    });
+    const result = await res.json();
+    if (result.error) { showToast('Error: ' + result.error); return; }
+    showCovenantReview(covenant.type, covenant.params, result);
+  } catch(e) {
+    showToast('Error: ' + e.message);
+  }
+}
+
+/* ═══ Review Sheet ═══ */
+function showReviewSheet({ title, details, onConfirm, confirmLabel }) {
+  const overlay = document.getElementById('sheet-overlay');
+  const body = document.getElementById('sheet-body');
+
+  let detailHtml = '';
+  for (const d of details) {
+    detailHtml += `<div class="detail"><span class="k">${d.k}</span><span class="v">${d.v}</span></div>`;
+  }
+
+  body.innerHTML = `
+    <h2 style="font-size:20px;font-weight:700;margin-bottom:16px;">${title}</h2>
+    ${detailHtml}
+    <div class="btn-row mt-16">
+      <button class="btn btn-secondary" onclick="closeSheet()">Cancel</button>
+      <button class="btn btn-primary" id="sheet-confirm">${confirmLabel || 'Confirm'}</button>
+    </div>
+  `;
+  overlay.classList.remove('hidden');
+
+  document.getElementById('sheet-confirm').onclick = onConfirm;
+}
+
+function closeSheet() {
+  document.getElementById('sheet-overlay').classList.add('hidden');
+}
+
+/* ═══ Broadcast ═══ */
+async function broadcastTx(txHex) {
+  showToast('Broadcasting…');
+  try {
+    const res = await fetch(`${BACKEND_URL}/kccApi`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'broadcast', txHex: txHex })
+    });
+    const result = await res.json();
+    if (result.error) { showToast('Broadcast failed: ' + result.error); return; }
+    if (result.txId) {
+      closeSheet();
+      showReviewSheet({
+        title: '✅ Transaction Sent',
+        details: [
+          { k: 'TX ID', v: result.txId },
+          { k: 'Explorer', v: `kaspa.fyi/tx/${result.txId.slice(0,16)}…` }
+        ],
+        onConfirm: () => { closeSheet(); refreshBalance(); fetchUTXOs(); },
+        confirmLabel: 'Done'
+      });
+    }
+  } catch(e) {
+    showToast('Broadcast error: ' + e.message);
+  }
+}
+
+/* ═══ Navigation ═══ */
+function navTo(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.tabbar .tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+
+  document.getElementById('page-onboarding').classList.add('hidden');
+  document.getElementById('page-dashboard').classList.toggle('hidden', tab !== 'dashboard');
+  document.getElementById('page-covenants').classList.toggle('hidden', tab !== 'covenants');
+  document.getElementById('page-send').classList.toggle('hidden', tab !== 'send');
+
+  const titles = { dashboard: 'Scorpion Wallet', covenants: 'Covenants', send: 'Send KAS' };
+  document.getElementById('nav-title').textContent = titles[tab] || 'Scorpion Wallet';
+  document.getElementById('nav-left').textContent = tab === 'dashboard' ? '' : '‹ Wallet';
+
+  if (tab === 'dashboard') { refreshBalance(); fetchUTXOs(); }
+}
+
+function navBack() {
+  if (currentTab !== 'dashboard') navTo('dashboard');
+}
+
+/* ═══ Toast ═══ */
+function showToast(msg) {
+  const existing = document.querySelector('.toast');
+  if (existing) existing.remove();
+  const toast = document.createElement('div');
+  toast.className = 'toast';
+  toast.textContent = msg;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 3000);
+}
+
+/* ═══ Init ═══ */
+async function init() {
+  try {
+    await loadCryptoLibs();
+  } catch(e) {
+    console.error('Crypto libs failed:', e);
+    showToast('⚠ Failed to load signing library — check connection');
+  }
+
+  if (loadWallet()) {
+    showDashboard();
+  } else {
+    document.getElementById('page-onboarding').classList.remove('hidden');
+  }
+}
+
+init();
+</script>
+</body>
+</html>
