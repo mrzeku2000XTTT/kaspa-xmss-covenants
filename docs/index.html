@@ -295,7 +295,7 @@ textarea.input-field { resize: vertical; min-height: 60px; font-family: monospac
 // Keys never leave the browser. No backend relay. No custody.
 // ════════════════════════════════════════════════════════════════
 
-const AI_ENDPOINT = 'https://superagent-c8d6f2a6.base44.app/functions/covenantIntentAI';
+const AI_ENDPOINT = 'https://base44.app/api/apps/6a444b036408e68ec8d6f2a6/functions/covenantIntentAI';
 const KASPA_PRICE_API = 'https://api.coingecko.com/api/v3/simple/price?ids=kaspa&vs_currencies=usd';
 const DAA_PER_DAY = 864000;
 
@@ -319,6 +319,13 @@ let wallet = null;
 let covenants = [];
 let currentTab = 'dashboard';
 let keyVisible = false;
+
+function showOnboarding() {
+  document.getElementById('page-dashboard').classList.add('hidden');
+  document.getElementById('navbar').classList.add('hidden');
+  document.getElementById('tabbar').classList.add('hidden');
+  document.getElementById('page-onboarding').classList.remove('hidden');
+}
 
 function toggleNetwork() {
   currentNetwork = currentNetwork === 'mainnet' ? 'testnet10' : 'mainnet';
@@ -1314,12 +1321,20 @@ async function parseIntentAI(text) {
 
 function parseIntentClientSide(text) {
   const lower = text.toLowerCase().trim();
-  const lockMatch = lower.match(/lock\s+([0-9]+\.?[0-9]*)\s+kas\s+for\s+([0-9]+\.?[0-9]*)\s+days?/);
-  if (lockMatch) return { type: 'timelock', params: { amountKas: parseFloat(lockMatch[1]), lockDays: parseFloat(lockMatch[2]) } };
+  // Timelock — supports days, hours, minutes
+  const lockDaysMatch = lower.match(/lock\s+([0-9]+\.?[0-9]*)\s+kas\s+for\s+([0-9]+\.?[0-9]*)\s+days?/);
+  if (lockDaysMatch) return { type: 'timelock', params: { amountKas: parseFloat(lockDaysMatch[1]), lockDays: parseFloat(lockDaysMatch[2]) } };
+  const lockHoursMatch = lower.match(/lock\s+([0-9]+\.?[0-9]*)\s+kas\s+for\s+([0-9]+\.?[0-9]*)\s+hours?/);
+  if (lockHoursMatch) return { type: 'timelock', params: { amountKas: parseFloat(lockHoursMatch[1]), lockDays: parseFloat(lockHoursMatch[2]) / 24 } };
+  const lockMinMatch = lower.match(/lock\s+([0-9]+\.?[0-9]*)\s+kas\s+for\s+([0-9]+\.?[0-9]*)\s+min(?:utes?)?/);
+  if (lockMinMatch) return { type: 'timelock', params: { amountKas: parseFloat(lockMinMatch[1]), lockDays: parseFloat(lockMinMatch[2]) / 1440 } };
+  // Escrow
   const escrowMatch = lower.match(/escrow\s+([0-9]+\.?[0-9]*)\s+kas\s+for\s+buyer\s+at\s+(kaspa:[a-z0-9]+)/);
   if (escrowMatch) return { type: 'escrow', params: { amountKas: parseFloat(escrowMatch[1]), buyerAddress: escrowMatch[2], timeoutDays: 30 } };
+  // Multisig
   const multiMatch = lower.match(/multisig\s+([0-9]+\.?[0-9]*)\s+kas\s+with\s+(kaspa:[a-z0-9]+)/);
   if (multiMatch) return { type: 'multisig', params: { amountKas: parseFloat(multiMatch[1]), counterparty: multiMatch[2] } };
+  // Send
   const sendMatch = lower.match(/send\s+([0-9]+\.?[0-9]*)\s+kas\s+to\s+(kaspa:[a-z0-9]+)/);
   if (sendMatch) return { type: 'send', params: { amountKas: parseFloat(sendMatch[1]), destination: sendMatch[2] } };
   return null;
@@ -1669,6 +1684,8 @@ window.showCovenantDetails = showCovenantDetails;
 window.fundCovenant = fundCovenant;
 window.showSweepWallet = showSweepWallet;
 window.showImportFromAdd = showImportFromAdd;
+window.toggleNetwork = toggleNetwork;
+window.showOnboarding = showOnboarding;
 window.refreshBalance = refreshBalance;
 window.fetchUTXOs = fetchUTXOs;
 window.renderCovenants = renderCovenants;
