@@ -1,0 +1,8 @@
+# Sample topics — one per line. Lines starting with # are ignored.
+# Edit freely. Run:  python -m app.batch --topics topics.txt
+The psychology of people who overthink everything
+Why you feel tired even after sleeping
+The quiet loneliness of being the strong friend
+Why small talk feels exhausting for some people
+The hidden cost of always being available
+Why you can't relax even when nothing is wrong

@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Faceless Video Studio</title>
+<meta name="description" content="Turn one line into a cinematic, narrated video — script, voiceover, and visuals timed automatically. Open-source." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<svg id="bg" aria-hidden="true"></svg>
+
+<header class="topbar">
+  <div class="brand">
+    <svg class="logo" viewBox="0 0 32 32" aria-hidden="true" fill="none">
+      <rect x="2" y="6" width="28" height="20" rx="4" stroke="currentColor" stroke-width="2"/>
+      <path d="M14 12l6 4-6 4z" fill="currentColor"/>
+    </svg>
+    <div class="brand-text">
+      <span class="brand-name">Faceless Video Studio</span>
+      <span class="brand-sub">cinematic · narrated · auto-timed</span>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <span class="dot" id="provDot"></span><span id="provLabel">checking…</span>
+  </div>
+</header>
+
+<main class="shell">
+  <section class="panel config" aria-label="Video configuration">
+    <h1 class="title">Turn a feeling into a video.</h1>
+    <p class="lede">Write one line. The studio drafts a reflective script, records a calm voiceover, paints a visual for each scene, and assembles a timed, scored film.</p>
+
+    <form id="form" autocomplete="off">
+      <label class="field">
+        <span class="label">OpenAI API key <span class="muted" id="keyHint">(optional if set on server)</span></span>
+        <input id="apikey" name="api_key" type="password" placeholder="sk-..." data-testid="input-apikey" />
+      </label>
+
+      <label class="field">
+        <span class="label">Topic / theme</span>
+        <textarea id="topic" name="topic" rows="2" placeholder="The psychology of people who are tired of existing" data-testid="input-topic">The psychology of people who overthink everything</textarea>
+      </label>
+
+      <div class="row">
+        <label class="field grow">
+          <span class="label">Narrator voice</span>
+          <select id="voice" name="voice" data-testid="select-voice"></select>
+        </label>
+        <label class="field small">
+          <span class="label">Scenes</span>
+          <div class="stepper">
+            <button type="button" class="step-btn" data-dir="-1" aria-label="fewer scenes">−</button>
+            <input id="nscenes" name="n_scenes" type="number" min="4" max="10" value="7" data-testid="input-scenes" />
+            <button type="button" class="step-btn" data-dir="1" aria-label="more scenes">+</button>
+          </div>
+        </label>
+      </div>
+
+      <label class="field check">
+        <input id="music" name="music" type="checkbox" checked data-testid="input-music" />
+        <span class="label inline">Ambient music bed</span>
+      </label>
+
+      <button type="submit" class="btn primary" id="generate" data-testid="button-generate">
+        <svg viewBox="0 0 24 24" aria-hidden="true" fill="none"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>
+        <span>Generate video</span>
+      </button>
+      <p class="hint" id="costHint">Each render uses credits for script, voiceover &amp; image generation. Runs locally or self-hosted — your key never leaves the request.</p>
+    </form>
+  </section>
+
+  <section class="panel stage" aria-label="Render status and result">
+    <div class="empty" id="emptyState">
+      <svg viewBox="0 0 64 64" aria-hidden="true" fill="none" class="empty-art">
+        <rect x="6" y="14" width="52" height="36" rx="5" stroke="currentColor" stroke-width="2"/>
+        <path d="M27 25l12 7-12 7z" fill="currentColor"/>
+      </svg>
+      <h2 class="empty-title">Your film appears here</h2>
+      <p class="empty-sub">Generate to watch the script, voiceover and visuals come together — scene by scene.</p>
+    </div>
+
+    <div class="running" id="runningState" hidden>
+      <h2 class="title-sm" id="jobTitle">Working…</h2>
+      <ol class="timeline" id="timeline">
+        <li data-step="script">Writing script</li>
+        <li data-step="audio">Recording voiceover</li>
+        <li data-step="image">Creating visuals</li>
+        <li data-step="assemble">Assembling film</li>
+      </ol>
+      <div class="status-line" id="statusLine" data-testid="text-status">Starting…</div>
+      <div class="grid" id="imageGrid" data-testid="grid-images"></div>
+    </div>
+
+    <div class="result" id="resultState" hidden>
+      <video id="resultVideo" controls playsinline data-testid="video-result"></video>
+      <div class="result-actions">
+        <a class="btn" id="downloadBtn" download data-testid="link-download">Download MP4</a>
+        <button class="btn" id="newBtn" data-testid="button-new">New video</button>
+      </div>
+      <details class="script" open>
+        <summary>Script</summary>
+        <ol id="scriptList" class="script-list"></ol>
+      </details>
+    </div>
+
+    <div class="error-box" id="errorState" hidden>
+      <h2 class="title-sm">Something went wrong</h2>
+      <p id="errorMsg" data-testid="text-error"></p>
+      <button class="btn" id="retryBtn">Try again</button>
+    </div>
+  </section>
+</main>
+
+<footer class="foot"><span>Faceless Video Studio · open source · self-hosted</span></footer>
+<script src="app.js"></script>
+</body>
+</html>
