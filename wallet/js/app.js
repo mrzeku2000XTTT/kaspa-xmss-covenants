@@ -9,10 +9,10 @@ import {
   NATIVE_KAS, VAULT_PRODUCTS, loadWatchlist, addToken, removeToken,
   loadVaults, saveVault, updateVault, deleteVault, purgeVaultsWhere, formatAmount, formatTokenUnits, tokenColor,
   fetchKcc20Portfolio, fetchKrc20Portfolio, fetchKcc20PortfolioMany, fetchKrc20PortfolioMany,
-  fetchKronAddrTrades, fetchKronTokenUtxos, KRON_IDX,
+  fetchKronAddrTrades, fetchKronTokenUtxos, fetchKronAddrHoldings, KRON_IDX,
   krc20Logo, toTokenRaw, setVaultOwner, kcc20Identicon, VAULT_GROUPS, LIFE_KINDS, lifeKindMeta
-} from './kcc20.js?v=117';
-import { parseIntent, describeIntent, askFor, parseDurationField, interpretVaultChat, normalizeChat } from './intent.js?v=118';
+} from './kcc20.js?v=118';
+import { parseIntent, describeIntent, askFor, parseDurationField, interpretVaultChat, normalizeChat } from './intent.js?v=119';
 import { payloadFromAddress } from './script.js?v=90';
 import { explainTransaction, scorpionAnswer } from './scorpion.js?v=114';
 import {
@@ -23,10 +23,10 @@ import {
   fetchOwnedUtxos, collectSpendableUtxos, buildSentinelChain, buildRecurringChain, buildHashlockCovenant,
   newHashlockSecret, checkinHop, currentHop, parseXmssKit, p2shFromRedeemHex, spendXmssVault,
   disconnectRpc, buildDcaDrips, sendKasMany, releaseDcaDrip, cancelDcaDrip, isMassError
-} from './tx.js?v=135';
-import { bootDappConnect, pingTttDappFrame } from './dappConnect.js?v=121';
+} from './tx.js?v=168';
+import { bootDappConnect, pingTttDappFrame, TTT_TREASURY } from './dappConnect.js?v=171';
 import { schedulePersistIframeVault, bootIframeVaultWatch } from './iframeVault.js?v=120';
-import { kronMarkets, quoteKronTrade, executeKronTrade, formatKasSompi, lookupKronTick, tradeCostLines, attachKronLogos, kronCandles, quoteKcc20Bridge, executeKcc20Bridge, formatTokenRaw } from './kronTrade.js?v=138';
+import { kronMarkets, quoteKronTrade, executeKronTrade, formatKasSompi, lookupKronTick, liveQuote, tradeCostLines, attachKronLogos, kronCandles, kronLogoFor, quoteKcc20Bridge, executeKcc20Bridge, formatTokenRaw } from './kronTrade.js?v=143';
 import {
   BET_AGENT_ADDR, TTT_TICK, WINDOW_MS, windowBounds, fmtRemain,
   kkdagsHeld, isKcc20Pass, hireCost, maxHireHours,
@@ -46,8 +46,8 @@ import { runPhoneStudio, runServerStudio } from './studio.js?v=89';
 import {
   isKaswareInstalled, isDesktopBrowser, kaswareEnabled, kaswareSigning, kaswareConnectedAddress,
   connectKasware, disconnectKasware, bindKaswareEvents, loadKaswarePref, compoundWithKasware,
-  ensureKaswareSigner, syncKaswareNetwork
-} from './kasware.js?v=100';
+  ensureKaswareSigner, syncKaswareNetwork, walletIsKaswareChip, autoArmKaswareForWallet
+} from './kasware.js?v=159';
 import {
   cookMarkets, cookQuote, cookWrappers, pickWrappedMarketId, cookOrderbook, cookCandles,
   cookDeploy, cookBuildOrder, cookFillOrder, cookSweep, cookWrap, cookMint,
@@ -55,10 +55,10 @@ import {
   loadAgentJob, saveAgentJob, sompiToKas, kasToSompiNum,
   rememberLaunch, loadLaunched, cookOwnerBalances, cookDeployed,
   cookTickOf, cookBookLevels
-} from './atrade.js?v=100';
-import { SCORPION_MEMORY } from './scorpionMemory.js?v=139';
+} from './atrade.js?v=102';
+import { SCORPION_MEMORY } from './scorpionMemory.js?v=152';
 
-export const BUILD = '139';
+export const BUILD = '177';
 
 const TOKEN_FALLBACK_LOGO = 'assets/ttt.png';
 
@@ -126,6 +126,16 @@ function vaultCounterpartyKey(vault) {
 
 function isLifeVault(v) {
   return v?.type === 'life' || !!v?.lifeKind || !!v?.params?.lifeKind;
+}
+
+function isDdPayVault(v) {
+  if (!v) return false;
+  if (v.type === 'ddpay') return true;
+  return /^DD pay-in/i.test(String(v.name || ''));
+}
+
+function purgeDdPayVaults() {
+  return purgeVaultsWhere(isDdPayVault);
 }
 
 function isDcaVault(v) {
@@ -250,10 +260,13 @@ let lastAutoSweep = 0;
 let autoSweepBusy = false;
 const autoSweepTried = new Set();
 const autoSweepTriedAt = new Map();
+const autoSweepFails = new Map();
 const freezeTimers = new Map();
 let kccHoldings = [];
 let krcHoldings = [];
+let kkdCellCache = [];
 let kronPx = {};
+let kronTradeBasis = {};
 const BASIS_KEY = 'kcc20_basis_v1';
 let tokenLoadErr = '';
 let lastTokenFetch = 0;
@@ -291,6 +304,8 @@ let agentTimer = null;
 let agentPreviewTimer = null;
 let agentBusy = false;
 let agentPreview = null;
+let agentWake = null;
+let agentTickDebounce = 0;
 let betTimer = null;
 let betHireTimer = null;
 let betBusy = false;
@@ -758,6 +773,35 @@ function sessionOpen() {
   return !!wallet && pinUnlockedFor === wallet.id;
 }
 
+const UNLOCK_AT_KEY = 'kcc20_unlocked_v1';
+
+function persistSession() {
+  if (!wallet?.id) return;
+  try { localStorage.setItem(UNLOCK_AT_KEY, JSON.stringify({ id: wallet.id, at: Date.now() })); } catch {}
+}
+
+function clearPersistedSession() {
+  try { localStorage.removeItem(UNLOCK_AT_KEY); } catch {}
+}
+
+function restorePersistedSession() {
+  try {
+    const r = JSON.parse(localStorage.getItem(UNLOCK_AT_KEY) || 'null');
+    if (!r?.id || !r.at) return false;
+    if (Date.now() - Number(r.at) > 45 * 60 * 1000) return false;
+    if (!wallet) return false;
+    pinUnlockedFor = wallet.id;
+    sessionUnlocked = true;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isDappPopup() {
+  try { return new URLSearchParams(location.search).get('dapp') === '1'; } catch { return false; }
+}
+
 function hidePinLock() {
   $('pin-lock')?.classList.add('hidden');
   $('pin-lock')?.setAttribute('aria-hidden', 'true');
@@ -768,7 +812,12 @@ function hidePinLock() {
   if (sessionOpen()) $('tabbar')?.classList.add('show');
 }
 
+function markBooted() {
+  document.documentElement.classList.add('booted');
+}
+
 function beginPinFlow(mode, purpose) {
+  markBooted();
   pinMode = mode || 'unlock';
   pinBuffer = '';
   if (mode !== 'confirm' && mode !== 'change-confirm') pinPending = '';
@@ -973,6 +1022,7 @@ async function submitPin() {
 async function finishPinUnlock() {
   sessionUnlocked = true;
   if (wallet?.id) pinUnlockedFor = wallet.id;
+  persistSession();
   hidePinLock();
   if (wallet?.address) await unlockToHome();
 }
@@ -984,6 +1034,7 @@ function lockNow() {
   stopAgentLoop();
   pinUnlockedFor = '';
   sessionUnlocked = false;
+  clearPersistedSession();
   $('tabbar')?.classList.remove('show');
   if (!loadPin()) beginPinFlow('set');
   else beginPinFlow('unlock');
@@ -1173,7 +1224,10 @@ async function activateWallet(w, { toastMsg } = {}) {
   pinUnlockedFor = '';
   sessionUnlocked = false;
   $('tabbar')?.classList.remove('show');
-  if (wallet.kasware && kaswareSigning(wallet)) {
+  if (walletIsKaswareChip(wallet) && !isDappPopup()) {
+    try { await autoArmKaswareForWallet(wallet); } catch {}
+  }
+  if (restorePersistedSession() || (wallet.kasware && (kaswareSigning(wallet) || isDappPopup()))) {
     pinUnlockedFor = wallet.id;
     sessionUnlocked = true;
     await unlockToHome();
@@ -1186,19 +1240,378 @@ async function activateWallet(w, { toastMsg } = {}) {
   beginPinFlow('unlock');
 }
 
+const DAPP_BOUND_KEY = 'kcc20_dapp_bound_v1';
+let dappBoundAddr = '';
+try { dappBoundAddr = String(localStorage.getItem(DAPP_BOUND_KEY) || ''); } catch {}
+
+function walletByAddr(addr) {
+  if (!addr) return null;
+  const list = loadWalletList();
+  return list.find(w => sameAddrPayload(w.address, addr)) || null;
+}
+
+function walletForDapp() {
+  if (wallet && dappBoundAddr && sameAddrPayload(wallet.address, dappBoundAddr)) return wallet;
+  return walletByAddr(dappBoundAddr) || wallet;
+}
+
+function rememberDappAccount(addr) {
+  dappBoundAddr = String(addr || '');
+  try {
+    if (dappBoundAddr) localStorage.setItem(DAPP_BOUND_KEY, dappBoundAddr);
+    else localStorage.removeItem(DAPP_BOUND_KEY);
+  } catch {}
+}
+
+async function ensureDappPayer() {
+  try { dappBoundAddr = String(localStorage.getItem(DAPP_BOUND_KEY) || dappBoundAddr || ''); } catch {}
+  const bound = walletByAddr(dappBoundAddr);
+  if (bound && wallet?.id !== bound.id) {
+    await switchDappWallet(bound.id);
+  }
+  return walletForDapp() || wallet;
+}
+
+function dappHoldingRow(tick) {
+  const t = holdingForTick(tick);
+  if (!t) return { ticker: String(tick || '').toUpperCase(), decimals: 0, balance: '0', protocol: 'kcc20' };
+  return t;
+}
+
+function dappHoldingsList() {
+  const kas = { ticker: 'KAS', name: 'Kaspa', decimals: 8, balance: String(balanceSompi), protocol: 'kas', native: true };
+  return [kas, ...(kccHoldings || []), ...(krcHoldings || [])];
+}
+
+async function dappSendToken({ tick, amount, dest }) {
+  const t = String(tick || 'KKDAG').toUpperCase();
+  if (isTestnet()) throw new Error('TTT credits are mainnet KKDAG');
+  const payer = walletForDapp() || wallet;
+  if (!payer?.address) throw new Error('Unlock KCC20 Wallet first');
+  if (kaswareSigning(payer) && !hexKey(payer.privKey)) {
+    throw new Error('This chip is KasWare-only. Switch Home to a native wallet (Wallet 2) that holds ' + t + ', Connect again, then Sign.');
+  }
+  const destOk = validateKaspaAddress(dest, networkId());
+  if (!destOk.isValid) throw new Error(destOk.error || 'Bad destination address');
+  if (Number(destOk.versionByte) !== 0) throw new Error('Pay to a kaspa:q receive address, not a kaspa:p vault');
+  if (sameAddrPayload(payer.address, dest)) throw new Error('That is this wallet’s own address');
+  if (sameAddrPayload(dest, TTT_TREASURY) && sameAddrPayload(payer.address, TTT_TREASURY)) {
+    throw new Error('This chip is ews (treasury). Fund must spend Wallet 1 (ax6). Switch the Home wallet chip to ax6, then Fund 10 KKDAG.');
+  }
+  const token = holdingForTick(t);
+  if (!token || token.native) throw new Error('Buy ' + t + ' on Home → Tokens with this wallet, then fund TTT');
+  const human = String(amount || '').trim();
+  const raw = toTokenRaw(human, token.decimals);
+  if (BigInt(raw) > BigInt(token.balance || '0')) throw new Error('More than this wallet holds');
+  await loadKaspaSdk();
+  await pingPublicNode();
+  toast('Paying ' + human + ' ' + t + ' from ' + (payer.name || 'wallet') + ' · ' + shortAddr(payer.address, 8, 6));
+  let availableUtxos = [];
+  try {
+    availableUtxos = payer.receiveAddrs?.length > 1
+      ? await fetchOwnedUtxos(payer)
+      : await fetchAddressUtxos(payer.address);
+  } catch {}
+  if (!availableUtxos.length) {
+    try { availableUtxos = await fetchAddressUtxos(payer.address); } catch {}
+  }
+  if (!availableUtxos.length) throw new Error('Need a little KAS in this wallet for the send fee');
+  const result = await sendKcc20({
+    wallet: payer,
+    dest,
+    token,
+    amountHuman: human,
+    utxos: availableUtxos,
+    onStatus: (m) => toast(m)
+  });
+  applyLocalTokenDelta(t, token.protocol || 'kcc20', '-' + String(raw));
+  pushTokenActivity({
+    dir: 'out',
+    tick: t,
+    protocol: token.protocol || 'kcc20',
+    amount: String(raw),
+    decimals: token.decimals,
+    txId: result.txId || '',
+    label: 'TTT credits',
+    note: 'From ' + shortAddr(payer.address, 10, 6)
+  }, payer.address);
+  if (dest && sameAddrPayload(dest, TTT_TREASURY)) {
+    pushTokenActivity({
+      dir: 'in',
+      tick: t,
+      protocol: 'kcc20',
+      amount: String(raw),
+      decimals: token.decimals,
+      txId: result.txId || '',
+      label: 'DD pay-in',
+      note: 'From ' + shortAddr(payer.address, 10, 6) + ' · KCC20 cell, not kaspa.org q-history'
+    }, TTT_TREASURY);
+  }
+  afterTx();
+  return {
+    txId: result.txId,
+    tick: t,
+    amount: human,
+    raw: String(raw),
+    dest,
+    from: payer.address,
+    explorer: result.txId ? ('https://kas.fyi/transaction/' + result.txId) : ''
+  };
+}
+
+function serializeKronQuote(q) {
+  if (!q) return null;
+  const dec = Number(q.decimals || 0);
+  const buy = q.side === 'buy';
+  return {
+    tick: String(q.tick || '').toUpperCase(),
+    side: q.side,
+    graduated: !!q.graduated,
+    decimals: dec,
+    kasIn: q.kasIn != null ? String(q.kasIn) : '',
+    kasOut: q.kasOut != null ? String(q.kasOut) : '',
+    tokenOut: q.tokenOut != null ? String(q.tokenOut) : '',
+    tokenIn: q.tokenIn != null ? String(q.tokenIn) : '',
+    kasHuman: formatKasSompi(buy ? q.kasIn : q.kasOut),
+    tokenHuman: formatTokenRaw(buy ? q.tokenOut : q.tokenIn, dec),
+    price: q.price == null ? null : q.price
+  };
+}
+
+async function dappQuoteKron({ tick, side, amount }) {
+  const t = String(tick || 'KKDAG').toUpperCase();
+  const s = String(side || 'buy').toLowerCase() === 'sell' ? 'sell' : 'buy';
+  const amt = String(amount || '').trim();
+  if (isTestnet()) throw new Error('KRON trade is mainnet. Switch this wallet off TN10.');
+  if (!/^[A-Z0-9]{2,12}$/.test(t) || t.includes('?')) throw new Error('Bad ticker');
+  if (!(Number(amt) > 0)) throw new Error('Enter an amount greater than 0');
+  const q = await quoteKronTrade({ tick: t, side: s, amount: amt });
+  return serializeKronQuote(q);
+}
+
+async function dappEnsureKaswareSigner(payer) {
+  hydrateNativeKey(payer);
+  const kwChip = walletIsKaswareChip(payer) || (kaswareSigning(payer) && !hexKey(payer.privKey));
+  const wantKw = kwChip || kaswareSigning(payer);
+  if (!wantKw) {
+    if (!hexKey(payer.privKey)) {
+      throw new Error('No in-app key on this chip. Import the 64-hex, or use the KasWare chip with the extension on.');
+    }
+    return false;
+  }
+  if (!isKaswareInstalled()) {
+    throw new Error('This chip is KasWare. Open KCC20 Wallet in Chrome or Edge with the KasWare extension, then Buy again. Phone browsers cannot pop KasWare — switch the sheet to a native PIN wallet on mobile.');
+  }
+  await autoArmKaswareForWallet(payer);
+  await ensureKaswareSigner(payer);
+  return true;
+}
+
+async function dappTradeKron({ tick, side, amount }) {
+  const t = String(tick || 'KKDAG').toUpperCase();
+  const s = String(side || 'buy').toLowerCase() === 'sell' ? 'sell' : 'buy';
+  const amt = String(amount || '').trim();
+  if (isTestnet()) throw new Error('KRON trade is mainnet. Switch this wallet off TN10.');
+  const payer = walletForDapp() || wallet;
+  if (!payer?.address) throw new Error('Unlock KCC20 Wallet first');
+  const useKw = await dappEnsureKaswareSigner(payer);
+  toast((s === 'buy' ? 'Buying ' : 'Selling ') + t + ' from ' + (payer.name || 'wallet') + (useKw ? ' · KasWare signs' : ''));
+  let availableUtxos = [];
+  try { availableUtxos = await fetchAddressUtxos(payer.address); } catch {}
+  if (!availableUtxos.length) throw new Error('Need KAS in this wallet for the trade');
+  const result = await executeKronTrade({
+    wallet: payer,
+    tick: t,
+    side: s,
+    amount: amt,
+    utxos: availableUtxos,
+    forceKasware: useKw,
+    onStatus: (m) => toast(m)
+  });
+  const q = result.quote;
+  if (q?.side === 'buy' && q.tokenOut != null) {
+    applyLocalTokenDelta(t, 'kcc20', '+' + String(q.tokenOut));
+    pushTokenActivity({
+      dir: 'in',
+      tick: t,
+      protocol: 'kcc20',
+      amount: String(q.tokenOut),
+      decimals: q.decimals,
+      txId: result.txId || '',
+      label: 'KRON buy',
+      note: 'Tap2Tip / dApp'
+    }, payer.address);
+  }
+  if (q?.side === 'sell' && q.tokenIn != null) {
+    applyLocalTokenDelta(t, 'kcc20', '-' + String(q.tokenIn));
+    pushTokenActivity({
+      dir: 'out',
+      tick: t,
+      protocol: 'kcc20',
+      amount: String(q.tokenIn),
+      decimals: q.decimals,
+      txId: result.txId || '',
+      label: 'KRON sell',
+      note: 'Tap2Tip / dApp'
+    }, payer.address);
+  }
+  afterTx();
+  return {
+    txId: result.txId,
+    tick: t,
+    side: s,
+    amount: amt,
+    quote: serializeKronQuote(q),
+    from: payer.address,
+    explorer: result.txId ? ('https://kas.fyi/transaction/' + result.txId) : ''
+  };
+}
+
+async function switchDappWallet(id) {
+  const w = loadWalletList().find(x => x.id === id);
+  if (!w) throw new Error('Add that wallet in KCC20 first (You → wallets)');
+  if (wallet?.id === w.id) return wallet;
+  wallet = migrateReceiveBook(migratePinOnto({ ...w }));
+  hydrateNativeKey(wallet);
+  applyWalletNetwork(wallet);
+  saveWallet();
+  setVaultOwner(w.address);
+  hydrateFromSnap(w.address);
+  rememberDappAccount(w.address);
+  try { await refreshTokenHoldings(); } catch {}
+  if (currentTab === 'home') renderHome();
+  return wallet;
+}
+
+function describeVaultIntent(spec) {
+  const specType = String(spec?.type || '').trim();
+  const specParams = spec?.params && typeof spec.params === 'object' ? spec.params : {};
+  if (spec?.message) {
+    const view = interpretVaultChat(spec.message, specType ? { type: specType, params: specParams } : null);
+    if (view.kind === 'talk') {
+      return { complete: false, ask: view.text, type: '', summary: view.text, intent: null };
+    }
+    let intent = view.intent;
+    if (!intent || intent.error) {
+      return { complete: false, ask: intent?.hint || 'Argent could not parse that', type: intent?.type || '', summary: '', intent: null };
+    }
+    if (specType) intent.type = specType;
+    if (Object.keys(specParams).length) intent.params = { ...(intent.params || {}), ...specParams };
+    const merged = parseIntent(spec.message, { type: intent.type, params: intent.params });
+    if (!merged.error) intent = merged;
+    return {
+      complete: !intent.missing?.length,
+      ask: askFor(intent.missing),
+      type: intent.type,
+      summary: describeIntent(intent),
+      intent
+    };
+  }
+  if (!specType) {
+    return { complete: false, ask: 'Need a vault type (timelock, sentinel, escrow, …) or a message Argent can parse.', type: '', summary: '', intent: null };
+  }
+  const intent = { type: specType, params: specParams, missing: [], complete: true, source: 'dapp' };
+  return { complete: true, ask: '', type: intent.type, summary: describeIntent(intent), intent };
+}
+
+async function dappCompileVault(spec) {
+  const preview = describeVaultIntent(spec);
+  if (preview.type === 'send') {
+    throw new Error('That is a plain send, not a vault. Call sendKas({ dest, amount }).');
+  }
+  if (!preview.complete || !preview.intent) {
+    throw new Error(preview.ask || 'Argent needs more fields');
+  }
+  const p = productForIntent(preview.intent);
+  const vault = await buildCovenant(p, preview.intent.params, { silent: true });
+  if (!vault?.address) throw new Error('Argent did not compile a kaspa:p vault');
+  const funded = await fundVault(vault, { skipPin: true, silent: true });
+  return {
+    type: vault.type,
+    name: vault.name,
+    address: vault.address,
+    txId: funded?.txId || '',
+    explorer: funded?.txId ? ('https://kas.fyi/transaction/' + funded.txId) : '',
+    params: vault.params || preview.intent.params
+  };
+}
+
+async function dappSendKas({ dest, amount, amountKas }) {
+  const amt = amountKas || amount;
+  if (!(Number(amt) > 0)) throw new Error('Enter an amount like 0.15');
+  if (!wallet?.address) throw new Error('No wallet');
+  hydrateNativeKey(wallet);
+  const result = await sendKas({ wallet, dest, amountKas: amt });
+  afterTx();
+  return {
+    txId: result.txId,
+    dest,
+    amountKas: Number(result.amountKas || amt),
+    explorer: result.txId ? ('https://kas.fyi/transaction/' + result.txId) : ''
+  };
+}
+
+function consumeArgentDeepLink() {
+  try {
+    const u = new URL(location.href);
+    const msg = u.searchParams.get('argent') || '';
+    const tab = u.searchParams.get('tab') || '';
+    if (tab === 'vault' || msg) showPage('vault');
+    if (msg) {
+      setArgentOpen(true);
+      if ($('chat-input')) $('chat-input').value = msg;
+    }
+  } catch {}
+}
+
 function dappHooks() {
   return {
     getWallet: () => wallet,
+    listWallets: () => loadWalletList().map(w => ({
+      id: w.id,
+      name: w.name || 'Wallet',
+      address: w.address,
+      kasware: !!w.kasware
+    })),
+    switchDappWallet,
+    rememberDappAccount,
+    ensureDappPayer,
+    payerLabel: () => {
+      const w = walletForDapp() || wallet;
+      return (w?.name || 'Wallet') + ' · ' + (w?.address || '');
+    },
+    isTreasuryPayer: () => !!(wallet?.address && sameAddrPayload(wallet.address, TTT_TREASURY)),
     sessionOpen,
     requirePin,
     toast,
     applyAppNetwork,
-    hydrateNativeKey
+    hydrateNativeKey,
+    ensureKasware: dappEnsureKaswareSigner,
+    getHoldings: async () => {
+      if (Date.now() - lastTokenFetch > 8000) {
+        try { await refreshTokenHoldings(); } catch {}
+      }
+      return dappHoldingsList();
+    },
+    getTokenBalance: async (tick) => {
+      try { await refreshTokenHoldings(); } catch {}
+      return dappHoldingRow(tick);
+    },
+    sendToken: dappSendToken,
+    quoteKron: dappQuoteKron,
+    tradeKron: dappTradeKron,
+    describeVaultIntent,
+    compileVault: dappCompileVault,
+    sendKas: dappSendKas,
+    afterTx
   };
 }
 
 async function unlockToHome() {
+  markBooted();
   if (wallet?.address) setVaultOwner(wallet.address);
+  persistSession();
+  purgeDdPayVaults();
   $('page-lock').classList.remove('active');
   showPage('home');
   $('tabbar').classList.add('show');
@@ -1212,6 +1625,7 @@ async function unlockToHome() {
   resumeBetHireIfAny();
   resumeDcaIfAny();
   try { bootDappConnect(dappHooks()); } catch {}
+  try { consumeArgentDeepLink(); } catch {}
   const pend = wallet?.address ? loadKrc20Pending(wallet.address) : null;
   if (pend) toast('Unfinished KRC-20 reveal — open Send to finish it');
 }
@@ -1320,6 +1734,7 @@ function renderHome() {
   renderHomeWallets();
   renderHoldings();
   paintDcaHome();
+  paintTreasuryHome();
 }
 
 function knsCheck(title = 'KNS verified') {
@@ -1511,6 +1926,18 @@ function tokenDot(t) {
   return `<div class="dot${fallback ? ' ttt-dot' : ''}"><img alt="" src="${esc(src)}" data-tick="${esc(t.ticker || '')}" data-proto="${esc(t.protocol || 'kcc20')}" data-fb="${fb}" referrerpolicy="no-referrer" decoding="async"></div>`;
 }
 
+function activityTickLogo(tick, protocol, image) {
+  const t = String(tick || 'KAS').toUpperCase();
+  const proto = protocol || (t === 'KAS' ? 'kas' : 'kcc20');
+  if (t === 'KAS' || proto === 'kas') return tokenDot({ ticker: 'KAS', protocol: 'kas', native: true });
+  const hold = (kccHoldings || []).find(h => String(h.ticker || '').toUpperCase() === t);
+  return tokenDot({
+    ticker: t,
+    protocol: proto,
+    image: image || hold?.image || kronLogoFor(t)
+  });
+}
+
 function launchLogoData() {
   const src = $('at-logo-prev')?.src || '';
   if (!src || /ttt\.png/i.test(src)) return TOKEN_FALLBACK_LOGO;
@@ -1607,16 +2034,76 @@ function noteKronFill(q) {
     addBasis(tick, Number(q.net || q.kasOut || 0) / 1e8, Number(q.tokenIn || 0) / (10 ** dec), 'sell');
   }
 }
-function markHoldingIfNew(tick, have, px) {
-  const t = String(tick || '').toUpperCase();
-  if (!t || !(have > 0) || !(px > 0)) return;
-  const map = loadBasis();
-  const row = map[t] || { kasIn: 0, tokIn: 0, kasOut: 0, tokOut: 0, markKas: 0 };
-  if (row.kasIn > 0 || row.markKas > 0) return;
-  row.markKas = px;
-  map[t] = row;
-  saveBasis(map);
+
+function noteATradeActivity(job, side, px, result) {
+  const tick = String(job?.tick || result?.quote?.tick || '').toUpperCase();
+  if (!tick) return;
+  const q = result?.quote || {};
+  const dec = Number(q.decimals ?? job?.preview?.decimals ?? 0);
+  const buy = side === 'buy';
+  const amt = buy ? (q.tokenOut ?? '') : (q.tokenIn ?? '');
+  pushTokenActivity({
+    dir: buy ? 'in' : 'out',
+    tick,
+    protocol: 'kcc20',
+    amount: String(amt || ''),
+    decimals: dec,
+    txId: result?.txId || '',
+    label: buy ? 'A-Trade buy' : 'A-Trade sell',
+    kind: 'atrade',
+    note: fmtPx(px) + ' KAS · Scorpion ' + tick,
+    image: kronLogoFor(tick)
+  });
 }
+function fmtPct(n) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return '0.00%';
+  return (x > 0 ? '+' : '') + x.toFixed(2) + '%';
+}
+
+function rebuildKronTradeBasis(rows) {
+  const map = {};
+  const sorted = [...(rows || [])].sort((a, b) => Number(a.ts || a.time || 0) - Number(b.ts || b.time || 0));
+  for (const t of sorted) {
+    const tick = String(t.tick || t.ticker || '').toUpperCase();
+    const side = String(t.side || '').toLowerCase();
+    const vol = Number(t.volume ?? t.amount ?? t.tokenAmount ?? 0);
+    const px = Number(t.price ?? t.priceKas ?? 0);
+    if (!tick || !(vol > 0) || !(px > 0)) continue;
+    const kas = vol * px;
+    const row = map[tick] || { kasIn: 0, tokIn: 0, kasOut: 0, tokOut: 0 };
+    if (side === 'sell') {
+      row.kasOut += kas;
+      row.tokOut += vol;
+    } else if (side === 'buy') {
+      row.kasIn += kas;
+      row.tokIn += vol;
+    }
+    map[tick] = row;
+  }
+  kronTradeBasis = map;
+}
+
+async function hydrateKronPnl(addr) {
+  if (!addr || isTestnet()) return;
+  const addrs = (typeof ownedAddresses === 'function' ? ownedAddresses(wallet) : [addr]).filter(Boolean).slice(0, 6);
+  const bags = await Promise.all(addrs.map(a => fetchKronAddrTrades(a, 200).catch(() => [])));
+  rebuildKronTradeBasis(bags.flat());
+}
+
+function holdingCost(tick, have) {
+  const traded = kronTradeBasis[tick];
+  const local = loadBasis()[tick];
+  const b = (traded?.tokIn > 0 ? traded : null) || (local?.tokIn > 0 ? local : null);
+  if (!b || !(b.tokIn > 0) || !(have > 0)) return null;
+  const netTok = b.tokIn - (b.tokOut || 0);
+  const netKas = b.kasIn - (b.kasOut || 0);
+  const avg = netTok > 0 && netKas > 0 ? netKas / netTok : (b.kasIn / b.tokIn);
+  if (!(avg > 0)) return null;
+  const cost = avg * have;
+  return { cost, avg };
+}
+
 function holdingPnl(t) {
   if (t?.native) return null;
   const tick = String(t.ticker || '').toUpperCase();
@@ -1624,43 +2111,32 @@ function holdingPnl(t) {
   const have = Number(t.balance || 0) / (10 ** dec);
   const live = kronPx[tick] || {};
   const px = Number(live.price || t.priceKas || 0);
-  const chg24 = Number(live.change24h);
-  const value = have * px;
-  markHoldingIfNew(tick, have, px);
-  const b = loadBasis()[tick] || {};
-  if (b.tokIn > 0 && b.kasIn > 0) {
-    const avg = b.kasIn / b.tokIn;
-    const cost = avg * have;
-    const pnl = value - cost;
-    const pct = cost > 0 ? (pnl / cost) * 100 : 0;
-    return { px, value, cost, pnl, pct, mode: 'cost', chg24 };
+  const chg24 = Number.isFinite(Number(live.change24h)) ? Number(live.change24h) : 0;
+  const value = have * (px > 0 ? px : 0);
+  const c = holdingCost(tick, have);
+  if (c && value > 0) {
+    const pnl = value - c.cost;
+    const pct = c.cost > 0 ? (pnl / c.cost) * 100 : 0;
+    return { px, value, cost: c.cost, pnl, pct, mode: 'cost', chg24 };
   }
-  if (b.markKas > 0 && px > 0) {
-    const cost = b.markKas * have;
-    const pnl = value - cost;
-    const pct = ((px - b.markKas) / b.markKas) * 100;
-    return { px, value, cost, pnl, pct, mode: 'mark', chg24 };
-  }
-  if (Number.isFinite(chg24)) return { px, value, cost: 0, pnl: 0, pct: chg24, mode: '24h', chg24 };
-  return { px, value, cost: 0, pnl: 0, pct: 0, mode: 'none', chg24: 0 };
+  return { px, value, cost: 0, pnl: 0, pct: chg24, mode: '24h', chg24 };
 }
 
 function tokenRow(t, extra = '') {
   const proto = t.protocol === 'krc20' ? 'KRC-20' : (t.native ? 'Native' : 'KCC20');
   const amt = t.native ? formatAmount(t.sompi) : formatTokenUnits(t.balance, t.decimals);
   const pnl = t.native ? null : holdingPnl(t);
-  let em = t.native ? (t.usd || '') : proto;
-  let emClass = '';
-  if (pnl && (pnl.mode === 'cost' || pnl.mode === 'mark')) {
-    const sign = pnl.pct >= 0 ? '+' : '';
-    em = sign + pnl.pct.toFixed(1) + '% · ' + (pnl.pnl >= 0 ? '+' : '') + formatKasSompi(Math.round(pnl.pnl * 1e8)) + ' KAS';
-    emClass = 'pnl ' + (pnl.pct >= 0 ? 'up' : 'down');
-  } else if (pnl && pnl.mode === '24h') {
-    const sign = pnl.pct >= 0 ? '+' : '';
-    em = '24h ' + sign + pnl.pct.toFixed(1) + '%';
-    emClass = 'pnl ' + (pnl.pct >= 0 ? 'up' : 'down');
+  let amtMeta = `<em>${esc(t.native ? (t.usd || '') : proto)}</em>`;
+  if (pnl && pnl.px > 0) {
+    const bits = [];
+    if (pnl.value > 0) bits.push(`<em class="pnl-val">${esc(formatKasSompi(Math.round(pnl.value * 1e8)) + ' KAS')}</em>`);
+    bits.push(`<em class="pnl ${pnl.chg24 >= 0 ? 'up' : 'down'}">24h ${esc(fmtPct(pnl.chg24))}</em>`);
+    if (pnl.mode === 'cost' && Number.isFinite(pnl.pct)) {
+      bits.push(`<em class="pnl ${pnl.pct >= 0 ? 'up' : 'down'}">P&amp;L ${esc(fmtPct(pnl.pct))}</em>`);
+    }
+    amtMeta = bits.join('');
   } else if (Number(t.priceKas) && price) {
-    em = usd(Number(t.balance) / (10 ** (t.decimals || 0)) * t.priceKas);
+    amtMeta = `<em>${esc(usd(Number(t.balance) / (10 ** (t.decimals || 0)) * t.priceKas))}</em>`;
   }
   const key = `${t.protocol || 'watch'}:${t.ticker}`;
   const sub = t.native
@@ -1675,7 +2151,7 @@ function tokenRow(t, extra = '') {
       </div>
       <div class="amt">
         <b>${esc(amt)}</b>
-        <em class="${esc(emClass)}">${esc(em)}</em>
+        ${amtMeta}
       </div>
     </button>`;
 }
@@ -1684,7 +2160,19 @@ function renderHoldings() {
   const kasRow = tokenRow({ ...NATIVE_KAS, sompi: balanceSompi, usd: usd(kas()), protocol: 'native' }, 'data-ticker="KAS"');
   const kccRows = kccHoldings.map(t => tokenRow(t));
   const krcRows = krcHoldings.map(t => tokenRow(t));
-  const locked = loadVaults().filter(v => v.address && vaultLockedSompi(v) > 0 && !isVaultHistory(v) && v.status !== 'cancelled' && !isDcaVault(v));
+  const ddRows = (isTttTreasuryWallet() ? kkdCellCache : []).map(c => `
+    <button class="row token-row" type="button" data-dd-cell="${esc(c.txid)}:${esc(String(c.index))}">
+      <div class="dot" style="background:rgba(122,162,247,.2);color:#7aa2f7">↓</div>
+      <div>
+        <div class="title">DD pay-in</div>
+        <div class="sub">${esc(c.pAddr ? shortAddr(c.pAddr, 12, 8) : (c.txid ? c.txid.slice(0, 14) + '…' : 'KKDAG cell'))}</div>
+      </div>
+      <div class="amt">
+        <b>${esc(Number(c.amt).toLocaleString())}</b>
+        <em class="pnl up">incoming KKDAG</em>
+      </div>
+    </button>`);
+  const locked = loadVaults().filter(v => v.address && vaultLockedSompi(v) > 0 && !isVaultHistory(v) && v.status !== 'cancelled' && !isDcaVault(v) && !isDdPayVault(v));
   const lockRows = locked.map(v => {
     const sec = remainingLockSec(v.unlockDaa, v.unlockAt);
     const lockedNow = sec == null || sec > 0;
@@ -1703,12 +2191,12 @@ function renderHoldings() {
       </div>
     </button>`;
   });
-  const rows = [kasRow, ...kccRows, ...krcRows, ...lockRows];
+  const rows = [kasRow, ...kccRows, ...ddRows, ...krcRows, ...lockRows];
   const pnlKey = kccHoldings.map(t => {
     const p = holdingPnl(t);
-    return `${t.ticker}:${p?.pct?.toFixed?.(1) || ''}:${p?.mode || ''}`;
+    return `${t.ticker}:${p?.value?.toFixed?.(4) || ''}:${p?.chg24?.toFixed?.(2) || ''}:${p?.pct?.toFixed?.(2) || ''}:${p?.mode || ''}`;
   }).join(',');
-  const key = `${balanceSompi}|${kccHoldings.map(t => `${t.ticker}:${t.balance}:${t.image || ''}`).join(',')}|${krcHoldings.map(t => `${t.ticker}:${t.balance}`).join(',')}|${locked.map(v => v.address + ':' + (v.fundedSompi || 0)).join(',')}|${pnlKey}`;
+  const key = `${balanceSompi}|${kccHoldings.map(t => `${t.ticker}:${t.balance}:${t.image || ''}`).join(',')}|${krcHoldings.map(t => `${t.ticker}:${t.balance}`).join(',')}|${locked.map(v => v.address + ':' + (v.fundedSompi || 0)).join(',')}|${pnlKey}|${kkdCellCache.map(c => c.amt + ':' + c.txid).join(',')}`;
   const box = $('holdings');
   paintUtxoCount();
   if (box?.dataset.key === key) return;
@@ -1850,6 +2338,7 @@ async function renderTokKcom() {
 }
 
 function vaultStatusLine(v) {
+  if (isDdPayVault(v)) return 'Incoming DD credit · ' + (vaultTokenLabel(v) || 'KKDAG');
   const tok = vaultTokenLabel(v);
   const locked = vaultLockedSompi(v);
   const amt = tok || (locked ? formatAmount(locked) + ' KAS' : '0 KAS');
@@ -1976,7 +2465,8 @@ function setVaultHistory(on) {
 }
 
 function renderVault() {
-  const all = loadVaults().filter(v => !isLifeVault(v));
+  purgeDdPayVaults();
+  const all = loadVaults().filter(v => !isLifeVault(v) && !isDdPayVault(v));
   const history = all.filter(isVaultHistory);
   const live = all.filter(v => !isVaultHistory(v));
   const mine = showVaultHistory ? history : live;
@@ -2192,6 +2682,8 @@ function pushTokenActivity(ev, addr) {
     label: ev.label || (ev.dir === 'out' ? 'Sent' : 'Received'),
     note: ev.note || '',
     until: ev.until || '',
+    kind: ev.kind || '',
+    image: ev.image || kronLogoFor(ev.tick) || '',
     wallet: loadWalletList().find(w => w.address === use)?.name || ''
   };
   const dup = list.find(x => {
@@ -2205,6 +2697,8 @@ function pushTokenActivity(ev, addr) {
     let dirty = false;
     if (row.txId && !dup.txId) { dup.txId = row.txId; dirty = true; }
     if (row.note && !dup.note) { dup.note = row.note; dirty = true; }
+    if (row.kind && !dup.kind) { dup.kind = row.kind; dirty = true; }
+    if (row.image && !dup.image) { dup.image = row.image; dirty = true; }
     if (ev.time && Number(ev.time) > Number(dup.time || 0)) { dup.time = Number(ev.time); dirty = true; }
     if (dirty) saveTokenActivity(list, use);
     scheduleActivityPaint();
@@ -2349,6 +2843,32 @@ async function ingestNewKcc20Cells({ ticks } = {}) {
   }));
 }
 
+async function ingestKcc20CellActivity(addr) {
+  const use = addr || wallet?.address;
+  if (!use || isTestnet()) return;
+  let ticks = [...new Set((kccHoldings || []).map(t => String(t.ticker || '').toUpperCase()).filter(Boolean))].slice(0, 8);
+  if (sameAddrPayload(use, TTT_TREASURY) && !ticks.includes('KKDAG')) ticks = ['KKDAG', ...ticks];
+  for (const tick of ticks) {
+    const cells = await fetchKronTokenUtxos(tick, use).catch(() => []);
+    for (const c of cells || []) {
+      const amt = String(c.amount || '0');
+      const txId = c.outpoint?.transactionId || '';
+      if (!(Number(amt) > 0) || !txId) continue;
+      const dd = sameAddrPayload(use, TTT_TREASURY) && tick === 'KKDAG';
+      pushTokenActivity({
+        dir: 'in',
+        tick,
+        protocol: 'kcc20',
+        amount: amt,
+        decimals: Number(c.dec ?? 0),
+        txId,
+        label: dd ? 'DD pay-in' : 'Received',
+        note: dd ? 'Covenant cell on ews — kaspa.org q-page will not list this' : 'KCC20 cell'
+      }, use);
+    }
+  }
+}
+
 async function ingestKronActivity(addr) {
   const use = addr || wallet?.address;
   if (!use || isTestnet()) return;
@@ -2439,18 +2959,24 @@ function rowsForWallet(addr, txs, walletName) {
       if (isVaultActivityLabel(tok.label)) {
         row.label = tok.tick && tok.tick !== 'KAS' ? `${tok.label} ${tok.tick}` : tok.label;
         if (tok.tick && tok.tick !== 'KAS') row.tokenLabel = activityVal(tok);
+      } else if (tok.kind === 'atrade') {
+        row.label = (tok.label || (tok.dir === 'in' ? 'A-Trade buy' : 'A-Trade sell')) + (tok.tick ? ' ' + tok.tick : '');
+        row.tokenLabel = activityVal(tok);
       } else {
         row.label = (tok.dir === 'in' ? 'Received ' : 'Sent ') + tok.tick;
         row.tokenLabel = activityVal(tok);
       }
     }
     const expl = explainTransaction(tx, { address: addr, vaults: loadVaults() });
+    const tickForLogo = tok?.tick || (row.tokenLabel ? '' : 'KAS');
     rows.push({
       kind: 'chain',
       id,
       time: Number(tx.block_time || tx.blockTime || 0),
       dir: row.dir,
       title: tag + row.label,
+      badge: tok?.kind === 'atrade' ? 'A-Trade' : '',
+      logo: activityTickLogo(tickForLogo || tok?.tick || 'KAS', tok?.protocol, tok?.image),
       sub: [tok ? (tok.protocol === 'krc20' ? 'KRC-20' : (tok.protocol === 'kas' ? 'KAS' : 'KCC20')) : expl.title, tok?.note || '', id ? id.slice(0, 10) + '…' : '', new Date(tx.block_time || Date.now()).toLocaleString()].filter(Boolean).join(' · '),
       val: row.tokenLabel || ((row.dir === 'in' ? '+' : '−') + formatAmount(row.amount || 0)),
       feeLine: (tok && tok.protocol !== 'kas' && tok.tick !== 'KAS')
@@ -2474,6 +3000,8 @@ function rowsForWallet(addr, txs, walletName) {
       time: Number(a.time || 0),
       dir: a.dir,
       title: tag + titleCore,
+      badge: a.kind === 'atrade' ? 'A-Trade' : '',
+      logo: activityTickLogo(a.tick, a.protocol, a.image),
       sub: [proto, a.note || '', a.txId ? a.txId.slice(0, 10) + '…' : (vaultish ? 'this device' : 'live credit'), new Date(a.time || Date.now()).toLocaleString()].filter(Boolean).join(' · '),
       val: activityVal(a),
       feeLine: a.note || (a.txId ? '' : (vaultish ? 'Saved on this device' : 'Indexed to this wallet')),
@@ -2509,9 +3037,9 @@ function renderActivity(txs = []) {
   }
   box.innerHTML = rows.slice(0, 40).map(r => `
       <button class="tx" type="button" ${r.id ? `data-txid="${esc(r.id)}"` : ''} ${r.tokId ? `data-token-act="${esc(r.tokId)}"` : ''}>
-        <div class="dir">${r.dir === 'in' ? '↓' : '↑'}</div>
+        <div class="dir">${r.logo || (r.dir === 'in' ? '↓' : '↑')}</div>
         <div class="meta">
-          <b>${esc(r.title)}</b>
+          <b>${esc(r.title)}${r.badge ? ` <span class="act-badge">${esc(r.badge)}</span>` : ''}</b>
           <span>${esc(r.sub)}</span>
         </div>
         <div class="val ${r.dir === 'in' ? 'in' : 'out'}">${esc(r.val)}${r.feeLine ? `<small>${esc(r.feeLine)}</small>` : ''}
@@ -2573,6 +3101,182 @@ function openTtt() {
   $('ttt-screen')?.classList.remove('hidden');
   $('ttt-screen')?.setAttribute('aria-hidden', 'false');
   $('tabbar')?.classList.remove('show');
+}
+
+function notifyTttTokenSent(payload) {
+  const win = $('ttt-frame')?.contentWindow;
+  if (!win) return;
+  const msg = { ns: 'kcc20', type: 'event', event: 'tokenSent', payload };
+  for (const o of ['https://tttz.xyz', 'https://www.tttz.xyz']) {
+    try { win.postMessage(msg, o); } catch {}
+  }
+}
+
+function openTttFund() {
+  haptic();
+  if (isTestnet()) { toast('TTT credits are mainnet KKDAG. Switch off TN10.'); return; }
+  if (isTttTreasuryWallet()) {
+    toast('Home chip is ews. Switch to Wallet 1 (ax6) — treasury never Funds.');
+    return;
+  }
+  const have = kkdagsHeld(kccHoldings);
+  if (!(have > 0)) {
+    toast('Buy KKDAG on Home → Tokens first, then Fund TTT');
+    return;
+  }
+  const dest = TTT_TREASURY;
+  const max = Math.floor(have);
+  const start = String(Math.min(10, max) || 1);
+  openSheet('Fund TTT with KKDAG', `
+    <p class="muted" style="text-align:left;padding:0 0 10px;"><b>PAYING FROM ${esc(wallet?.name || 'this wallet')}</b> — the Home chip. Treasury ews never signs this.</p>
+    <div class="kv kv-stack"><span class="k">From</span><span class="v">${esc(wallet?.address || '')}</span></div>
+    <div class="kv"><span class="k">This bag holds</span><span class="v">${esc(String(have))} KKDAG</span></div>
+    <div class="kv kv-stack"><span class="k">To ews</span><span class="v">${esc(dest)}</span></div>
+    <div class="field"><label>Amount (KKDAG)</label>
+      <div class="dest-row">
+        <input id="ttt-fund-amt" type="text" inputmode="decimal" value="${esc(start)}">
+        <button class="max-btn" id="ttt-fund-max" type="button">Max</button>
+      </div>
+    </div>
+  `, {
+    confirm: 'Sign & send',
+    gold: true,
+    onConfirm: async () => {
+      const amount = String($('ttt-fund-amt')?.value || '').trim();
+      if (!(Number(amount) > 0)) throw new Error('Enter how many KKDAG');
+      if (Number(amount) > have + 1e-9) throw new Error('More than you hold');
+      setSheetStatus('Signing KKDAG send…');
+      const result = await dappSendToken({ tick: 'KKDAG', amount, dest });
+      notifyTttTokenSent(result);
+      closeSheet();
+      toast('Sent ' + amount + ' KKDAG to TTT');
+      openSheet('KKDAG sent to TTT', `
+        <div class="kv"><span class="k">Amount</span><span class="v">${esc(amount)} KKDAG</span></div>
+        <div class="kv kv-stack"><span class="k">To</span><span class="v">${esc(dest)}</span></div>
+        ${txidBlock(result.txId)}
+        <p class="muted" style="text-align:left;padding-top:8px;">KKDAG is in the treasury cell (kaspa:p on explorers). Owner is ews <b>qq5yhvly…334ews</b>. This payer wallet cannot spend it. Open the treasury key in KCC20 (You → add wallet → paste that hex) and tap Sweep.</p>
+      `, { confirm: 'Done', cancel: false, onConfirm: () => closeSheet() });
+    }
+  });
+  $('ttt-fund-max')?.addEventListener('click', () => {
+    if ($('ttt-fund-amt')) $('ttt-fund-amt').value = String(max);
+  });
+}
+
+function isTttTreasuryWallet() {
+  return !!(wallet?.address && sameAddrPayload(wallet.address, TTT_TREASURY));
+}
+
+function paintTreasuryHome() {
+  const bar = $('btn-dd-treasury');
+  if (!bar) return;
+  const on = isTttTreasuryWallet();
+  bar.classList.toggle('hidden', !on);
+  if (!on) return;
+  const n = Math.floor(kkdagsHeld(kccHoldings));
+  const lab = $('dd-treasury-lab');
+  if (lab) lab.textContent = 'DD treasury · ' + n.toLocaleString() + ' KKDAG';
+  refreshDdInbox().catch(() => {});
+}
+
+async function refreshDdInbox() {
+  if (!wallet?.address || !isTttTreasuryWallet()) {
+    kkdCellCache = [];
+    return;
+  }
+  kkdCellCache = await kkdagCellsFor(wallet.address);
+  purgeDdPayVaults();
+  if (currentTab === 'home') renderHoldings();
+  if (currentTab === 'vault') renderVault();
+}
+
+async function treasuryKkdagOnChain() {
+  try {
+    const body = await fetch(KRON_IDX + '/token/KKDAG/address/' + encodeURIComponent(TTT_TREASURY), { cache: 'no-store' });
+    const j = await body.json();
+    return Number(j?.result?.balance ?? 0);
+  } catch {
+    return null;
+  }
+}
+
+async function kkdagCellsFor(addr) {
+  const rows = await fetchKronTokenUtxos('KKDAG', addr);
+  const out = [];
+  for (const c of rows || []) {
+    const amt = String(c.amount || '0');
+    if (!(Number(amt) > 0)) continue;
+    const txid = c.outpoint?.transactionId || '';
+    let pAddr = '';
+    try {
+      if (c.redeemScriptHex) {
+        const built = await p2shFromRedeemHex(c.redeemScriptHex);
+        pAddr = built?.address || String(built || '');
+      }
+    } catch {}
+    out.push({ amt, txid, pAddr: pAddr || '', index: Number(c.outpoint?.index ?? 0) });
+  }
+  return out.sort((a, b) => Number(b.amt) - Number(a.amt));
+}
+
+async function openTreasurySweep() {
+  haptic();
+  const onChain = await treasuryKkdagOnChain();
+  const mine = isTttTreasuryWallet();
+  if (!mine) {
+    openSheet('Sweep DD treasury (ews)', `
+      <p class="muted" style="text-align:left;padding:0 0 10px;">You are on the payer wallet. Switch to <b>Wallet 3</b> (qq5yhvly…ews) — that key already holds the KKDAG. Home then shows Sweep.</p>
+      <div class="kv kv-stack"><span class="k">Treasury (ews)</span><span class="v">${esc(TTT_TREASURY)}</span></div>
+      <div class="kv"><span class="k">On-chain KKDAG</span><span class="v">${onChain == null ? '…' : esc(Number(onChain).toLocaleString())}</span></div>
+      <div class="kv"><span class="k">This phone</span><span class="v">${esc(shortAddr(wallet?.address || '', 10, 6))}</span></div>
+    `, {
+      confirm: 'Copy ews address',
+      gold: true,
+      onConfirm: async () => {
+        await navigator.clipboard.writeText(TTT_TREASURY);
+        toast('Treasury address copied');
+        closeSheet();
+      }
+    });
+    return;
+  }
+  try { await refreshTokenHoldings(); } catch {}
+  const have = kkdagsHeld(kccHoldings);
+  const cells = await kkdagCellsFor(wallet.address).catch(() => []);
+  if (!(have > 0) && !cells.length) {
+    toast(onChain ? ('Idx shows ' + Number(onChain).toLocaleString() + ' KKDAG — tap Refresh, then Sweep.') : 'No KKDAG on this treasury key yet');
+    return;
+  }
+  const cellRows = cells.length
+    ? cells.map(c => `
+        <div class="kv kv-stack">
+          <span class="k">${esc(Number(c.amt).toLocaleString())} KKDAG · cell ${esc(String(c.index))}</span>
+          <span class="v">${esc(c.pAddr || (c.txid ? c.txid.slice(0, 18) + '…' : ''))}</span>
+        </div>`).join('')
+    : '<p class="muted">Cells loading from KRON idx…</p>';
+  const others = otherWallets();
+  const dest0 = others.find(w => !sameAddrPayload(w.address, TTT_TREASURY))?.address || others[0]?.address || '';
+  openSheet('Cash out ews KKDAG', `
+    <p class="muted" style="text-align:left;padding:0 0 10px;">This is the <b>treasury</b> bag. Sweep moves KKDAG <em>off ews</em> to another wallet. Fund is the opposite (ax6 pays ews). Do not Max this unless you mean to empty ews.</p>
+    <div class="kv"><span class="k">Ews holds</span><span class="v">${esc(Math.floor(have).toLocaleString())} KKDAG</span></div>
+    ${cellRows}
+    <div class="field"><label>Amount to move off ews</label>
+      <input id="dd-sweep-amt" type="text" inputmode="decimal" value="">
+    </div>
+  `, {
+    confirm: dest0 ? 'Review send to ' + (others.find(w => w.address === dest0)?.name || 'wallet') : 'Review send',
+    gold: true,
+    onConfirm: () => {
+      const amt = String($('dd-sweep-amt')?.value || '').trim();
+      if (!(Number(amt) > 0)) throw new Error('Enter how many KKDAG to move. Leave empty and cancel if you only meant to Fund.');
+      closeSheet();
+      openSend({
+        assetKey: 'kcc20:KKDAG',
+        destination: dest0,
+        amount: amt
+      });
+    }
+  });
 }
 
 function closeTtt() {
@@ -2916,27 +3620,17 @@ function saveLook(look) {
 
 function applyWallpaper(dataUrl) {
   const poster = document.querySelector('.bg-poster');
-  const video = $('bg-video');
-  const mobileBg = window.matchMedia('(max-width: 520px), (pointer: coarse)').matches;
   if (dataUrl) {
     if (poster) {
       poster.src = dataUrl;
       poster.classList.remove('hidden');
     }
     document.body.style.backgroundImage = `url("${dataUrl}")`;
-    if (video) {
-      try { video.pause(); } catch {}
-      video.classList.add('hidden');
-    }
     return;
   }
   document.body.style.backgroundImage = '';
-  if (poster) poster.src = 'assets/bg.jpg';
-  if (video && !mobileBg) {
-    video.classList.remove('hidden');
-    video.play?.().catch(() => {});
-    if (poster) poster.classList.add('hidden');
-  } else if (poster) {
+  if (poster) {
+    poster.src = 'assets/bg.jpg';
     poster.classList.remove('hidden');
   }
 }
@@ -3558,12 +4252,30 @@ async function refreshTokenHoldings() {
       const withLogos = await attachKronLogos(kcc.value);
       kccHoldings = mergeFreshHoldings(kccHoldings, withLogos);
       try {
-        const mkts = await kronMarkets();
-        const map = {};
-        for (const m of mkts || []) {
-          map[String(m.tick || '').toUpperCase()] = { price: Number(m.price || 0), change24h: Number(m.change24h || 0) };
-        }
+        const map = { ...kronPx };
+        try {
+          const mkts = await kronMarkets();
+          for (const m of mkts || []) {
+            const tick = String(m.tick || '').toUpperCase();
+            if (!tick) continue;
+            const q = liveQuote(m);
+            map[tick] = { price: q.price, change24h: q.change24h };
+          }
+        } catch {}
+        const ticks = [...new Set((kccHoldings || []).map(t => String(t.ticker || '').toUpperCase()).filter(Boolean))].slice(0, 16);
+        await Promise.all(ticks.map(async tick => {
+          try {
+            const info = await lookupKronTick(tick);
+            const prev = map[tick] || {};
+            const q = liveQuote(info);
+            map[tick] = {
+              price: q.price || prev.price || 0,
+              change24h: Number.isFinite(Number(info.change24h)) ? Number(info.change24h) : Number(prev.change24h || 0)
+            };
+          } catch {}
+        }));
         kronPx = map;
+        await hydrateKronPnl(addr).catch(() => {});
       } catch {}
     }
     if (krc.status === 'fulfilled') krcHoldings = mergeFreshHoldings(krcHoldings, krc.value);
@@ -3610,6 +4322,8 @@ async function refreshTokenHoldings() {
   rememberActiveSnap();
   ingestNewKcc20Cells().catch(() => {});
   ingestKronActivity(addr).catch(() => {});
+  ingestKcc20CellActivity(addr).catch(() => {});
+  refreshDdInbox().catch(() => {});
   if (currentTab === 'home') renderHome();
   if (currentTab === 'tokens') renderTokens();
   if (currentTab === 'you') renderProfile();
@@ -3676,9 +4390,11 @@ function openTokenSheet(token) {
   const logoSrc = token.image || (token.native ? 'assets/kas.svg' : (token.protocol === 'krc20' ? krc20Logo(token.ticker) : kcc20Identicon(token.ticker)));
   const assetKey = `${token.protocol}:${token.ticker}`;
   const kcc = token.protocol === 'kcc20';
+  const ddSweep = kcc && String(token.ticker).toUpperCase() === 'KKDAG' && isTttTreasuryWallet();
   const acts = [
     tkAct('tk-recv', 'Receive', ICO_RECV),
     tkAct('tk-send', 'Send', ICO_SEND),
+    ...(ddSweep ? [tkAct('tk-dd-sweep', 'Sweep', ICO_SEND, ' tk-buy')] : []),
     ...(kcc ? [
       tkAct('tk-buy', 'Buy', ICO_BUY, ' tk-buy'),
       tkAct('tk-dca', 'DCA', ICO_DCA, ' tk-dca'),
@@ -3697,6 +4413,7 @@ function openTokenSheet(token) {
   `, { confirm: false, cancelLabel: 'Close' });
   $('tk-recv')?.addEventListener('click', () => { closeSheet(); openReceive({ token }); });
   $('tk-send')?.addEventListener('click', () => { closeSheet(); openSend({ token, assetKey }); });
+  $('tk-dd-sweep')?.addEventListener('click', () => { closeSheet(); openTreasurySweep().catch(e => toast(errText(e))); });
   $('tk-buy')?.addEventListener('click', () => { closeSheet(); openTrade({ tick: token.ticker, side: 'buy' }); });
   $('tk-dca')?.addEventListener('click', () => { closeSheet(); openTrade({ tick: token.ticker, side: 'dca' }); });
   $('tk-sell')?.addEventListener('click', () => { closeSheet(); openTrade({ tick: token.ticker, side: 'sell' }); });
@@ -3737,8 +4454,31 @@ function venueLabel(v) {
   return 'KRON';
 }
 
+function localTnLaunch(tick) {
+  const t = String(tick || '').toUpperCase();
+  return loadLaunched().find(x => String(x.tick || '').toUpperCase() === t && (!x.network || x.network === 'testnet-10')) || null;
+}
+
 function deskUsesCook() {
-  return atSrc === 'cook' || (atSrc === 'scorpion' && !!(atCook?.tokenId || atDesk?.tokenId));
+  if (atSrc === 'cook') return true;
+  if (atSrc === 'scorpion' && isTestnet()) return true;
+  return false;
+}
+
+async function offerTn10ForLaunch(mine) {
+  const tick = String(mine.tick || '').toUpperCase();
+  openSheet('Your ' + tick + ' is on TN10', `
+    <p class="muted" style="text-align:left;">Launch created this token on <b>Cook Testnet-10</b>. The TEST/KRON ticker on mainnet is a different coin. Switch Network to Testnet-10 (kaspatest address) to mint/buy the one you launched.</p>
+  `, {
+    confirm: 'Switch to TN10',
+    gold: true,
+    onConfirm: async () => {
+      await applyAppNetwork('testnet-10');
+      closeSheet();
+      openLaunchedToken(mine);
+      toast('TN10 on. Buy mints ' + tick + ' from the public minter.');
+    }
+  });
 }
 
 async function renderKronMarkets() {
@@ -3774,7 +4514,7 @@ function jumpToAtTrade(tick, side) {
   showPage('tokens');
   setAtPane('book');
   setAtSrc('kron');
-  openAtDesk({ venue: 'kron', tick: String(tick || 'KRON').toUpperCase() });
+  openAtDesk({ venue: 'kron', tick: String(tick || 'KKDAG').toUpperCase() });
   syncAtLabels(side);
 }
 
@@ -3810,7 +4550,8 @@ function syncAtLabels(side) {
   const tick = ($('at-tick')?.value || 'TOKEN').toUpperCase();
   const lab = $('at-amt-lab');
   if (!lab) return;
-  if (atSrc === 'kron') lab.textContent = s === 'sell' ? `Amount (${tick})` : 'Pay (KAS)';
+  const kronAmm = atSrc === 'kron' || (atSrc === 'scorpion' && !isTestnet());
+  if (kronAmm) lab.textContent = s === 'sell' ? `Amount (${tick})` : 'Pay (KAS)';
   else lab.textContent = s === 'sell' ? `Amount (${tick})` : 'Tokens';
 }
 
@@ -3853,7 +4594,13 @@ function setAtPane(pane) {
     syncAgStratUi(loadAgentJob()?.strat || selectedAgentStrat());
     paintAgentStatus();
     startAgentPreviewLoop();
-  } else {
+    fillAgentMarkets().catch(() => {});
+    const t = ($('ag-tick')?.value || loadAgentJob()?.tick || 'KKDAG').trim().toUpperCase();
+    if (t && !loadAgentJob()?.on) {
+      const needPrefill = !($('ag-buy')?.value && $('ag-sell')?.value);
+      applyAgentTick(t, { prefill: needPrefill }).catch(() => {});
+    }
+  } else if (!loadAgentJob()?.on) {
     stopAgentPreviewLoop();
   }
   if (bet) startBetUi();
@@ -3964,12 +4711,32 @@ async function renderScorpionMarkets() {
   if (!box) return;
   const mine = loadLaunched().filter(t => validTick(t.tick));
   const boosts = loadBoosts();
-  let mkts = [];
-  try { mkts = await cookMarkets(40); } catch {}
-  const byId = new Map(mkts.map(m => [String(m.tokenIdHex || m.metadata?.tokenIdHex || ''), m]));
-  const byTick = new Map(mkts.map(m => [cookTickOf(m), m]));
   const chunks = [];
+  if (!isTestnet()) {
+    box.innerHTML = box.innerHTML || `<div class="empty">Loading launched KCC20s…</div>`;
+    let rows = [];
+    try { rows = (await kronMarkets()).filter(m => validTick(m.tick) && !String(m.tick).includes('?')); } catch {}
+    const q = String($('at-tick')?.value || '').trim().toUpperCase();
+    const shown = q ? rows.filter(m => m.tick.includes(q) || String(m.name || '').toUpperCase().includes(q)) : rows;
+    chunks.push('<div class="section-label">Launched on KRON · tap to buy</div>');
+    chunks.push((shown.length ? shown : rows).slice(0, 80).map(m => {
+      const px = m.price ? fmtPx(m.price) + ' KAS' : (m.graduated ? 'Pool' : 'Curve');
+      return `
+      <button class="row token-row" type="button" data-sco-tick="${esc(m.tick)}" data-sco-name="${esc(m.name || m.tick)}" data-sco-logo="${esc(m.logo || '')}" data-sco-kron="1" data-sco-grad="${m.graduated ? '1' : ''}" data-sco-px="${m.price || ''}">
+        ${tokenDot({ ticker: m.tick, protocol: 'kcc20', image: m.logo })}
+        <div>
+          <div class="title">${esc(m.tick)}</div>
+          <div class="sub">${esc(m.graduated ? 'Pool AMM' : 'Curve')} · ${esc(m.name)}</div>
+        </div>
+        <div class="amt"><b>${esc(px)}</b><em>Buy with KAS</em></div>
+      </button>`;
+    }).join('') || `<div class="empty">KRON tokenlist unavailable.</div>`);
+  }
   if (mine.length) {
+    let mkts = [];
+    try { mkts = await cookMarkets(40); } catch {}
+    const byId = new Map(mkts.map(m => [String(m.tokenIdHex || m.metadata?.tokenIdHex || ''), m]));
+    const byTick = new Map(mkts.map(m => [cookTickOf(m), m]));
     chunks.push('<div class="section-label">Launched here</div>');
     chunks.push(mine.map(t => {
       const hit = (t.tokenId && byId.get(t.tokenId)) || byTick.get(String(t.tick).toUpperCase());
@@ -3977,15 +4744,16 @@ async function renderScorpionMarkets() {
       const bid = hit ? sompiToKas(hit.bestBidUnitPriceSompi) : 0;
       const id = t.tokenId || hit?.tokenIdHex || '';
       const mid = ask && bid ? (ask + bid) / 2 : (ask || bid);
+      const kron = !isTestnet() && !id;
       return `
-      <button class="row token-row" type="button" data-sco-id="${esc(id)}" data-sco-tick="${esc(t.tick)}" data-sco-name="${esc(t.name || t.tick)}" data-sco-logo="${esc(t.image || '')}" data-cook-ask="${ask || ''}" data-cook-bid="${bid || ''}">
+      <button class="row token-row" type="button" data-sco-id="${esc(id)}" data-sco-tick="${esc(t.tick)}" data-sco-name="${esc(t.name || t.tick)}" data-sco-logo="${esc(t.image || '')}" data-cook-ask="${ask || ''}" data-cook-bid="${bid || ''}" ${kron ? 'data-sco-kron="1"' : ''}>
         ${tokenDot({ ticker: t.tick, protocol: 'kcc20', image: t.image })}
         <div>
           <div class="title">${esc(t.tick)}</div>
           <div class="sub">${esc(t.name || 'Scorpion')} · ${esc(t.network === 'testnet-10' ? 'TN10' : (t.network || 'on-chain'))}</div>
         </div>
         <div class="amt">
-          <b>${mid ? fmtPx(mid) + ' KAS' : (id ? 'Trade' : 'Launch')}</b>
+          <b>${mid ? fmtPx(mid) + ' KAS' : (id || kron ? 'Trade' : 'Launch')}</b>
           <em>${bid || ask ? ('bid ' + (bid ? fmtPx(bid) : '—') + ' · ask ' + (ask ? fmtPx(ask) : '—')) : (t.txId ? esc(String(t.txId).slice(0, 8)) : 'local')}</em>
         </div>
       </button>`;
@@ -3994,7 +4762,7 @@ async function renderScorpionMarkets() {
   if (boosts.length) {
     chunks.push('<div class="section-label">Boosted</div>');
     chunks.push(boosts.filter(b => validTick(b.tick)).map(b => `
-      <button class="row token-row" type="button" data-sco-tick="${esc(b.tick)}" data-sco-name="${esc(b.tick)}">
+      <button class="row token-row" type="button" data-sco-tick="${esc(b.tick)}" data-sco-name="${esc(b.tick)}" data-sco-kron="${isTestnet() ? '' : '1'}">
         ${tokenDot({ ticker: b.tick, protocol: 'kcc20' })}
         <div>
           <div class="title">${esc(b.tick)}</div>
@@ -4003,7 +4771,7 @@ async function renderScorpionMarkets() {
         <div class="amt"><b>Featured</b></div>
       </button>`).join(''));
   }
-  box.innerHTML = chunks.join('') || `<div class="empty">Tokens you launch from Launch land here. Tap one for chart, book, and buy/sell.</div>`;
+  box.innerHTML = chunks.join('') || `<div class="empty">${isTestnet() ? 'Launch a token on TN10, then it lands here for buy/sell.' : 'No launched KCC20s yet.'}</div>`;
 }
 
 function pickCookRow(id, tick, extra = {}) {
@@ -4366,8 +5134,19 @@ async function atQuotePreview() {
   box.textContent = 'Quoting…';
   try {
     if (deskUsesCook()) {
-      const id = atCook?.tokenId || atDesk?.tokenId;
-      if (!id) { box.textContent = 'Tap a K.COM or Scorpion token first.'; return; }
+      let id = atCook?.tokenId || atDesk?.tokenId;
+      if (!id && tick) {
+        try {
+          const rows = await cookMarkets(40);
+          const hit = (rows || []).find(m => cookTickOf(m) === tick);
+          id = hit?.tokenIdHex || loadLaunched().find(t => String(t.tick).toUpperCase() === tick)?.tokenId || '';
+          if (id) atCook = { tokenId: id, tick };
+        } catch {}
+      }
+      if (!id) {
+        box.textContent = tick + ' is not on the TN10 book yet. Tap a listed Scorpion/K.COM token, or Launch it.';
+        return;
+      }
       const side = 'buy';
       const limSompi = limit > 0 ? String(kasToSompiNum(limit)) : undefined;
       const q = await cookQuote(id, { side, amount, mode: limit > 0 ? 'limit' : 'market', limitUnitPriceSompi: limSompi });
@@ -4416,12 +5195,17 @@ async function confirmAtSign(title, body, run) {
 
 async function reviewAtTrade(side) {
   const amount = ($('at-amt')?.value || '').trim();
-  const tick = ($('at-tick')?.value || 'KRON').trim().toUpperCase();
+  const tick = ($('at-tick')?.value || 'KKDAG').trim().toUpperCase();
   const limit = atLimitKas();
   const slip = atSlipPct();
   if (!amount) { toast('Enter an amount'); return; }
   if (!wallet) { toast('Unlock a wallet'); return; }
-  if (deskUsesCook()) return reviewCookTrade(side);
+  const mine = localTnLaunch(tick);
+  if (mine && !isTestnet()) {
+    await offerTn10ForLaunch(mine);
+    return;
+  }
+  if (deskUsesCook() || (mine && isTestnet())) return reviewCookTrade(side);
   let q;
   try { q = await quoteKronTrade({ tick, side, amount }); }
   catch (e) { toast(errText(e)); return; }
@@ -4455,9 +5239,31 @@ async function reviewAtTrade(side) {
   });
 }
 
+async function reviewCookMint(id, tick, amount) {
+  const amt = String(amount || '').trim() || '1';
+  const bits = `
+    <div class="kv"><span class="k">Mint</span><span class="v">${esc(amt)} ${esc(tick)}</span></div>
+    <div class="kv"><span class="k">Network</span><span class="v">Cook TN10</span></div>
+    <p class="muted" style="text-align:left;padding-top:8px;">This token is not on the DEX book yet. Buy = public mint from the minter you launched. Cook builds the PSKT. ${kaswareEnabled() ? 'KasWare on TN10 signs the funding input only.' : 'This device PIN-signs the funding input only.'}</p>`;
+  await confirmAtSign('Mint ' + tick, bits, async () => {
+    setSheetStatus('Building mint…');
+    const mint = await cookMint({
+      walletAddress: wallet.address,
+      tokenId: id,
+      tokenAmount: String(amt)
+    });
+    await signCookBuild(mint, 'Mint ' + tick);
+  });
+}
+
 async function reviewCookTrade(side) {
   if (!isTestnetAddr(wallet?.address)) {
-    toast('K.COM book is TN10. Import a kaspatest wallet to sign. KRON still trades mainnet.');
+    const mine = localTnLaunch(($('at-tick')?.value || '').trim().toUpperCase());
+    if (mine) {
+      await offerTn10ForLaunch(mine);
+      return;
+    }
+    toast('K.COM / Scorpion launch buys are TN10. Switch Network to Testnet-10. KRON AMM is mainnet.');
     return;
   }
   const amount = ($('at-amt')?.value || '').trim();
@@ -4475,7 +5281,8 @@ async function reviewCookTrade(side) {
   const wrappers = await cookWrappers(id);
   const wrapped = pickWrappedMarketId(wrappers);
   if (!wrapped) {
-    toast('This ticker is not on the DEX book yet (no wrapper). Buy WBLF or KARBON, or Graduate after Cook lists a wrapper.');
+    if (side === 'buy') return reviewCookMint(id, tick, amount);
+    toast('This ticker is not on the DEX book yet (no wrapper). Mint it with Buy, or Graduate after Cook lists a wrapper.');
     return;
   }
   const limSompi = limit > 0 ? String(kasToSompiNum(limit)) : '';
@@ -4552,7 +5359,7 @@ async function runCookOrder({ side, amount, id, wrapped, rest, quote, limit, sli
       unitPriceSompi: String(f.unitPriceSompi || quote.unitPriceSompi)
     });
   }
-  await signCookBuild(build, 'Cook ' + side);
+  return signCookBuild(build, 'Cook ' + side);
 }
 
 async function signCookBuild(build, label) {
@@ -4587,7 +5394,20 @@ async function signCookBuild(build, label) {
     <div class="kv"><span class="k">Signed</span><span class="v">${kaswareEnabled() ? 'KasWare' : 'This device'}</span></div>
     <div class="kv"><span class="k">Ticker</span><span class="v">${esc(tick || '—')}</span></div>
     ${txidBlock(txId)}
-  `, { confirm: 'View in TOKENS', cancel: false, onConfirm: () => { closeSheet(); setAtPane('tokens'); setTokPane('scorpion'); refreshAll(); } });
+  `, { confirm: isTestnet() ? 'Buy / mint it' : 'View in TOKENS', cancel: false, onConfirm: () => {
+    closeSheet();
+    const row = loadLaunched().find(t => t.tokenId === cid || (t.tick === tick && t.tokenId)) || { tick, tokenId: cid, name: tick, network: networkId() };
+    if (isTestnet() && row.tick) {
+      setAtPane('book');
+      setAtSrc('scorpion');
+      openLaunchedToken(row);
+      return;
+    }
+    setAtPane('tokens');
+    setTokPane('scorpion');
+    refreshAll();
+  } });
+  return { txId, quote: build };
 }
 
 async function applyAppNetwork(id) {
@@ -4781,11 +5601,11 @@ async function runCookGraduate() {
 }
 
 const AGENT_STRATS = {
-  range: 'Range: buy under your floor, sell over your ceiling. Uses the live AMM quote for your size.',
-  dip: 'Dip catch: buy when price is X% under the recent candle high. Optional sell-above still dumps rips.',
-  trend: 'Trend: buy when the last 3 candles close up and price is over the 8-candle average. Sell when they close down.',
-  curve: 'Curve stack: on an ungraduated KRON curve (KKDAG-style), buy dips until max KAS. Stops buying after graduation.',
-  fade: 'Fade pump: sell into green extension (X% off the recent high or hot 24h). Buy only a deep dip.'
+  range: 'Range: buy if the live AMM quote is at or under Buy below. Sell if it is at or over Sell above. Floors/ceilings prefill ~4% under / 5% over the current price when you pick a token.',
+  dip: 'Dip catch: buy after a drop of Dip % off the recent candle high (not your typed floor). Set Sell above if you also want to dump a bounce.',
+  trend: 'Trend: buy after three green closes while price is above the 8-bar average. Sell after three red closes. Ignores Buy below / Sell above.',
+  curve: 'Curve stack: on an ungraduated KRON curve, keep buying dips until Max KAS. After graduation it falls back to your range caps and can sell.',
+  fade: 'Fade pump: sell into a spike (near the recent high or a hot 24h). Only buy back after a full Dip % crash from that high.'
 };
 
 function selectedAgentStrat() {
@@ -4798,6 +5618,87 @@ function syncAgStratUi(strat) {
   if ($('ag-strat-help')) $('ag-strat-help').textContent = AGENT_STRATS[s] || AGENT_STRATS.range;
   $('ag-pct-wrap')?.classList.toggle('hidden', s !== 'dip' && s !== 'fade');
   $('ag-levels')?.classList.toggle('hidden', s === 'trend');
+}
+
+async function fillAgentMarkets() {
+  const box = $('ag-picks');
+  const list = $('ag-tick-list');
+  try {
+    const mkts = await kronMarkets();
+    const rows = (mkts || []).filter(m => validTick(m.tick));
+    const byTick = new Map(rows.map(m => [m.tick, m]));
+    const featured = ['KKDAG', 'KRON', 'IFWEN', 'KASCOV', 'KASDIA', 'PEPE', 'NACHO', 'ANSEM', 'MACH', 'KROSHI'];
+    const top = [];
+    for (const t of featured) if (byTick.has(t)) top.push(byTick.get(t));
+    for (const m of rows) {
+      if (top.length >= 10) break;
+      if (!top.some(x => x.tick === m.tick)) top.push(m);
+    }
+    if (list) {
+      list.innerHTML = rows.slice(0, 40).map(m => `<option value="${esc(m.tick)}">${esc(m.tick)}</option>`).join('');
+    }
+    if (box) {
+      const cur = ($('ag-tick')?.value || 'KKDAG').trim().toUpperCase();
+      box.innerHTML = top.map(m =>
+        `<button type="button" data-ag-pick="${esc(m.tick)}" class="${m.tick === cur ? 'on' : ''}">${esc(m.tick)}</button>`
+      ).join('');
+    }
+  } catch {}
+}
+
+function prefillAgentLevels(px) {
+  const p = Number(px || 0);
+  if (!(p > 0)) return;
+  // Buy on a dip (~14%), sell for a real spread after AMM fees (~24%) — not a 1–2% scalp.
+  if ($('ag-buy') && document.activeElement !== $('ag-buy')) $('ag-buy').value = Number(p * 0.86).toPrecision(4);
+  if ($('ag-sell') && document.activeElement !== $('ag-sell')) $('ag-sell').value = Number(p * 1.24).toPrecision(4);
+}
+
+async function agentLiveInfo(tick) {
+  const t = String(tick || '').toUpperCase();
+  let info = await lookupKronTick(t).catch(() => null);
+  if (!(Number(info?.price) > 0)) {
+    const mk = ((await kronMarkets().catch(() => [])) || []).find(m => m.tick === t);
+    if (mk) info = { tick: t, price: mk.price, change24h: mk.change24h, graduated: mk.graduated, decimals: mk.decimals };
+  }
+  return info;
+}
+
+async function applyAgentTick(tick, { prefill = true } = {}) {
+  const t = String(tick || '').trim().toUpperCase();
+  if (!validTick(t) && t) { toast('Ticker like KRON, KKDAG, IFWEN'); return; }
+  if (!t) return;
+  const job = loadAgentJob();
+  if (job?.on && job.tick && job.tick !== t) {
+    toast('Stop Scorpion to switch token');
+    if ($('ag-tick')) $('ag-tick').value = job.tick;
+    return;
+  }
+  if ($('ag-tick')) $('ag-tick').value = t;
+  document.querySelectorAll('#ag-picks [data-ag-pick]').forEach(b => b.classList.toggle('on', b.dataset.agPick === t));
+  if (!isTestnet() && prefill) {
+    try {
+      const info = await agentLiveInfo(t);
+      const px = Number(info?.price || 0);
+      if (px > 0) {
+        if ($('ag-now')) $('ag-now').textContent = t + ' now ' + fmtPx(px) + ' KAS · 24h ' + fmtChg(info.change24h);
+        prefillAgentLevels(px);
+        const paused = loadAgentJob();
+        if (paused && !paused.on) {
+          saveAgentJob({
+            ...paused,
+            tick: t,
+            buyBelow: Number($('ag-buy')?.value || 0),
+            sellAbove: Number($('ag-sell')?.value || 0),
+            preview: { tick: t, indexPx: px, ammPx: px, change24h: Number(info.change24h || 0), graduated: !!info.graduated }
+          });
+        }
+      }
+    } catch (e) {
+      if ($('ag-now')) $('ag-now').textContent = t + ' · ' + agentSoftErr(e, t);
+    }
+  }
+  await refreshAgentPreview();
 }
 
 function candleHigh(candles, n = 36) {
@@ -4884,17 +5785,19 @@ function agentNetLine(job) {
 function paintAgentFills(job) {
   const box = $('ag-fills');
   if (!box) return;
-  const fills = Array.isArray(job?.fills) ? job.fills.slice(-6).reverse() : [];
+  const fills = Array.isArray(job?.fills) ? job.fills.slice(-12).reverse() : [];
   if (!fills.length) {
-    box.innerHTML = '<span>No fills this session. Waiting for price to cross your levels.</span>';
+    box.innerHTML = '<span>No Scorpion fills this session. Buys and sells print here and on Activity with an A-Trade badge.</span>';
     return;
   }
-  box.innerHTML = fills.map(f => {
+  const tick = job?.tick || '';
+  box.innerHTML = '<div class="ag-fills-h">Scorpion fills</div>' + fills.map(f => {
     const cls = f.side === 'buy' ? 'up' : 'down';
+    const when = f.t ? new Date(f.t).toLocaleTimeString() : '';
     const tx = f.txId
       ? `<a href="${esc(explorerTx(f.txId))}" target="_blank" rel="noopener">${esc(String(f.txId).slice(0, 10))}…</a>`
       : esc(f.note || '');
-    return `<div><span class="${cls}">${esc((f.side || '').toUpperCase())}</span> ${esc(fmtPx(f.px))} KAS · ${tx}</div>`;
+    return `<div class="ag-fill">${tokenDot({ ticker: f.tick || tick, protocol: 'kcc20', image: kronLogoFor(f.tick || tick) })}<span class="${cls}">${esc((f.side || '').toUpperCase())}</span> ${esc(f.tick || tick)} @ ${esc(fmtPx(f.px))} KAS · ${esc(when)} · ${tx}</div>`;
   }).join('');
 }
 
@@ -4919,40 +5822,56 @@ function paintAgentStatus() {
     paintAgentFills(null);
     return;
   }
-  if ($('ag-tick') && document.activeElement !== $('ag-tick')) $('ag-tick').value = job.tick || '';
-  if ($('ag-size') && document.activeElement !== $('ag-size') && job.sizeKas) $('ag-size').value = String(job.sizeKas);
-  if ($('ag-buy') && document.activeElement !== $('ag-buy') && job.buyBelow) $('ag-buy').value = String(job.buyBelow);
-  if ($('ag-sell') && document.activeElement !== $('ag-sell') && job.sellAbove) $('ag-sell').value = String(job.sellAbove);
-  if ($('ag-max') && document.activeElement !== $('ag-max') && job.maxKas) $('ag-max').value = String(job.maxKas);
-  if (job.pct && $('ag-pct') && document.activeElement !== $('ag-pct')) $('ag-pct').value = String(job.pct);
+  const viewTick = (job.on ? job.tick : ($('ag-tick')?.value || job.tick || 'KKDAG')).trim().toUpperCase();
+  if (job.on && $('ag-tick') && document.activeElement !== $('ag-tick')) $('ag-tick').value = viewTick;
+  if (job.on && $('ag-size') && document.activeElement !== $('ag-size') && job.sizeKas) $('ag-size').value = String(job.sizeKas);
+  if (job.on && $('ag-buy') && document.activeElement !== $('ag-buy') && job.buyBelow) $('ag-buy').value = String(job.buyBelow);
+  if (job.on && $('ag-sell') && document.activeElement !== $('ag-sell') && job.sellAbove) $('ag-sell').value = String(job.sellAbove);
+  if (job.on && $('ag-max') && document.activeElement !== $('ag-max') && job.maxKas) $('ag-max').value = String(job.maxKas);
+  if (job.on && job.pct && $('ag-pct') && document.activeElement !== $('ag-pct')) $('ag-pct').value = String(job.pct);
   if (job.strat) syncAgStratUi(job.strat);
+  document.querySelectorAll('#ag-picks [data-ag-pick]').forEach(b => b.classList.toggle('on', b.dataset.agPick === viewTick));
   const last = job.last || 'waiting for a cross';
-  el.textContent = (running ? 'Scorpion on · ' : 'Paused · ') + job.tick + ' · spent '
-    + Number(job.spentKas || 0).toFixed(3) + '/' + Number(job.maxKas || 0) + ' KAS · ' + last;
+  const spent = Number(job.spentKas || 0);
+  const cap = Number(job.maxKas || 0);
+  el.textContent = (running ? 'Scorpion on · ' : 'Paused · ') + viewTick + ' · bought '
+    + spent.toFixed(3) + '/' + cap + ' KAS'
+    + (spent >= cap - 1e-9 && cap > 0 ? ' · buy cap hit, sells still on' : '')
+    + ' · ' + last;
   paintAgentFills(job);
-  const p = job.preview || agentPreview;
+  const p = (job.preview?.tick === viewTick ? job.preview : null)
+    || (agentPreview?.tick === viewTick ? agentPreview : null);
   const qel = $('ag-quote');
   const stats = $('ag-stats');
+  const nowPx = Number(p?.ammPx || p?.indexPx || 0);
+  if ($('ag-now')) {
+    $('ag-now').textContent = nowPx > 0
+      ? viewTick + ' now ' + fmtPx(nowPx) + ' KAS · 24h ' + fmtChg(p.change24h)
+      : viewTick + ' · loading quote';
+  }
   if (p && stats) {
     const chg = Number(p.change24h || 0);
     stats.innerHTML = `
-      <div class="at-stat"><b>${esc(fmtPx(p.ammPx || p.indexPx))}</b><span>AMM quote</span></div>
+      <div class="at-stat"><b>${esc(fmtPx(p.ammPx || p.indexPx))}</b><span>Now AMM</span></div>
       <div class="at-stat"><b>${esc(fmtPx(p.indexPx))}</b><span>Index</span></div>
-      <div class="at-stat"><b>${esc(p.tokens != null ? fmtTok(p.tokens) : '—')}</b><span>${esc(job.tick)} out</span></div>
+      <div class="at-stat"><b>${esc(p.tokens != null ? fmtTok(p.tokens) : '—')}</b><span>${esc(viewTick)} out</span></div>
       <div class="at-stat"><b>${esc(fmtChg(chg))}</b><span>24h</span></div>`;
+  } else if (stats) {
+    stats.innerHTML = '';
   }
   if (p && qel) {
-    const buy = Number(job.buyBelow || 0);
-    const sell = Number(job.sellAbove || 0);
+    const buy = Number((job.on ? job.buyBelow : $('ag-buy')?.value) || job.buyBelow || 0);
+    const sell = Number((job.on ? job.sellAbove : $('ag-sell')?.value) || job.sellAbove || 0);
     const px = Number(p.ammPx || p.indexPx || 0);
     const buyGap = buy > 0 && px > 0 ? ((px - buy) / buy) * 100 : null;
     const sellGap = sell > 0 && px > 0 ? ((sell - px) / px) * 100 : null;
     const bits = [];
-    if (p.tokens != null) bits.push(fmtTok(job.sizeKas) + ' KAS → ~' + fmtTok(p.tokens) + ' ' + job.tick);
-    if (buyGap != null) bits.push(buyGap > 0 ? fmtPx(buyGap) + '% above buy ' + fmtPx(buy) : 'buy level hit');
-    if (sellGap != null) bits.push(sellGap > 0 ? fmtPx(sellGap) + '% to sell ' + fmtPx(sell) : 'sell level hit');
+    if (p.tokens != null) bits.push(fmtTok(job.sizeKas || $('ag-size')?.value) + ' KAS → ~' + fmtTok(p.tokens) + ' ' + viewTick);
+    if (buyGap != null) bits.push(buyGap > 0 ? fmtPx(buyGap) + '% above buy ' + fmtPx(buy) : 'at buy ' + fmtPx(buy));
+    if (sellGap != null) bits.push(sellGap > 0 ? fmtPx(sellGap) + '% to sell ' + fmtPx(sell) : 'at sell ' + fmtPx(sell));
     qel.textContent = bits.join(' · ') || last;
-    if (p.note) qel.textContent += ' · ' + p.note;
+  } else if (qel) {
+    qel.textContent = last;
   }
 }
 
@@ -4963,24 +5882,26 @@ function stopAgentPreviewLoop() {
 function startAgentPreviewLoop() {
   if (agentPreviewTimer) return;
   agentPreviewTimer = setInterval(() => { refreshAgentPreview().catch(() => {}); }, 5000);
+  fillAgentMarkets().catch(() => {});
   refreshAgentPreview().catch(() => {});
 }
 
 async function refreshAgentPreview() {
-  if ($('at-agent')?.classList.contains('hidden')) return;
   const job = loadAgentJob();
-  const tick = (job?.tick || $('ag-tick')?.value || '').trim().toUpperCase();
+  const onAgent = !$('at-agent')?.classList.contains('hidden');
+  if (!onAgent && !job?.on) return;
+  const tick = ((job?.on ? job.tick : null) || $('ag-tick')?.value || 'KKDAG').trim().toUpperCase();
   const sizeKas = Number(job?.sizeKas || $('ag-size')?.value || 0.15);
   if (!tick) return;
   if (isTestnet()) {
-    agentPreview = { indexPx: 0, ammPx: 0, tokens: null, graduated: null, change24h: 0 };
+    agentPreview = { tick, indexPx: 0, ammPx: 0, tokens: null, graduated: null, change24h: 0 };
     if ($('ag-quote')) $('ag-quote').textContent = 'TN10 preview is the K.COM book on COOK. KRON AMM is mainnet only.';
     if ($('ag-net')) $('ag-net').textContent = agentNetLine(job);
     return;
   }
   try {
     const [info, candles] = await Promise.all([
-      lookupKronTick(tick).catch(() => null),
+      agentLiveInfo(tick),
       kronCandles(tick, 48).catch(() => [])
     ]);
     let ammPx = Number(info?.price || 0);
@@ -4994,7 +5915,14 @@ async function refreshAgentPreview() {
         graduated = !!q.graduated;
       } catch {}
     }
+    if (!(ammPx > 0) && !(Number(info?.price) > 0)) {
+      agentPreview = { tick, indexPx: 0, ammPx: 0, tokens: null, graduated, change24h: Number(info?.change24h || 0) };
+      if ($('ag-quote')) $('ag-quote').textContent = tick + ' quote retry';
+      paintAgentStatus();
+      return;
+    }
     agentPreview = {
+      tick,
       indexPx: Number(info?.price || 0),
       ammPx,
       tokens,
@@ -5003,19 +5931,21 @@ async function refreshAgentPreview() {
       change24h: Number(info?.change24h || 0),
       note: 'Green 1d can still print a tape of sells — close vs prior close, not “no sellers”.'
     };
-    if (job) {
+    if (job && (!job.on || String(job.tick).toUpperCase() === tick)) {
       job.preview = agentPreview;
       saveAgentJob(job);
     }
-    drawAtChart(candles, 'ag-chart');
+    if (onAgent) drawAtChart(candles, 'ag-chart');
     paintAgentStatus();
   } catch (e) {
-    if ($('ag-quote')) $('ag-quote').textContent = errText(e);
+    const msg = /fail(ed)? to fetch|network|HTTP/i.test(errText(e)) ? (tick + ' quote retry') : errText(e);
+    if ($('ag-quote')) $('ag-quote').textContent = msg;
   }
 }
 
 function stopAgentLoop() {
   if (agentTimer) { clearInterval(agentTimer); agentTimer = null; }
+  dropAgentWake();
   paintAgentStatus();
 }
 
@@ -5028,12 +5958,23 @@ function resumeAgentIfAny() {
   } else paintAgentStatus();
 }
 
+async function holdAgentWake() {
+  try {
+    if (navigator.wakeLock?.request) agentWake = await navigator.wakeLock.request('screen');
+  } catch { agentWake = null; }
+}
+function dropAgentWake() {
+  try { agentWake?.release?.(); } catch {}
+  agentWake = null;
+}
+
 function startAgentLoop() {
   stopAgentLoop();
   const job = loadAgentJob();
   if (!job?.on) return;
   agentTimer = setInterval(() => { tickAgent().catch(() => {}); }, 8000);
   startAgentPreviewLoop();
+  holdAgentWake();
   paintAgentStatus();
   tickAgent().catch(() => {});
 }
@@ -5048,14 +5989,15 @@ async function toggleAgent() {
     return;
   }
   if (!wallet) { toast('Unlock a wallet'); return; }
-  const tick = ($('ag-tick')?.value || (isTestnet() ? '' : 'KRON')).trim().toUpperCase();
+  const tick = ($('ag-tick')?.value || (isTestnet() ? '' : 'KKDAG')).trim().toUpperCase();
   const sizeKas = Number($('ag-size')?.value || 0.15);
   const buyBelow = Number($('ag-buy')?.value || 0);
   const sellAbove = Number($('ag-sell')?.value || 0);
   const maxKas = Number($('ag-max')?.value || 1);
   if (!tick) { toast(isTestnet() ? 'Pick a K.COM or Scorpion token first' : 'Set a token'); return; }
   if (isTestnet() && tick === 'KRON') { toast('KRON is mainnet-only. Arm a K.COM / Scorpion token on TN10.'); return; }
-  if (!(sizeKas > 0)) { toast('Set a size'); return; }
+  if (!(sizeKas > 0)) { toast('Set Size KAS (native Kaspa per buy)'); return; }
+  if (!(maxKas > 0)) { toast('Set Max KAS (session buy budget)'); return; }
   const strat = selectedAgentStrat();
   const pct = Number($('ag-pct')?.value || 5);
   if (strat === 'range' && !(buyBelow > 0) && !(sellAbove > 0)) {
@@ -5068,13 +6010,14 @@ async function toggleAgent() {
     try { await requirePin('Start Scorpion on ' + tick); }
     catch (e) { if (errText(e) === 'cancelled') return; toast(errText(e)); return; }
   }
+  const prev = Array.isArray(job?.fills) ? job.fills : [];
   saveAgentJob({
     on: true, tick, sizeKas, buyBelow, sellAbove, maxKas,
     strat, pct: Number.isFinite(pct) ? pct : 5,
-    spentKas: 0, last: 'armed ' + strat, startedAt: Date.now(),
+    spentKas: 0, last: 'armed ' + strat + ' · buy cap ' + maxKas + ' KAS', startedAt: Date.now(),
     venue: isTestnet() ? 'cook' : 'kron',
     tokenId: isTestnet() ? (atCook?.tokenId || atDesk?.tokenId || '') : '',
-    fills: []
+    fills: prev.slice(-12)
   });
   startAgentLoop();
   startAgentPreviewLoop();
@@ -5083,9 +6026,26 @@ async function toggleAgent() {
   paintAgentStatus();
 }
 
+function agentSoftErr(e, tick) {
+  const msg = errText(e);
+  if (/fail(ed)? to fetch|network|HTTP|indexer/i.test(msg)) return (tick || 'token') + ' idx retry';
+  return msg;
+}
+
+function pushAgentFill(job, side, fillPx, txId, note) {
+  job.fills = (job.fills || []).concat({
+    t: Date.now(),
+    side,
+    tick: job.tick,
+    px: fillPx,
+    txId: txId || '',
+    note: note || ''
+  }).slice(-12);
+}
+
 async function tickAgent() {
   if (agentBusy) return;
-  if (!sessionOpen() || document.visibilityState !== 'visible') {
+  if (!sessionOpen()) {
     paintAgentStatus();
     return;
   }
@@ -5097,61 +6057,68 @@ async function tickAgent() {
       const q = await cookQuote(job.tokenId, { side: 'buy', amount: String(job.sizeKas), mode: 'market' });
       const px = sompiToKas(q?.averageUnitPriceSompi || q?.unitPriceSompi);
       if (!(px > 0) || !q?.valid) { job.last = 'no K.COM fill'; saveAgentJob(job); paintAgentStatus(); return; }
-      if (job.buyBelow > 0 && px <= job.buyBelow && (job.spentKas || 0) + job.sizeKas <= job.maxKas + 1e-9) {
+      const canBuy = (job.spentKas || 0) + job.sizeKas <= job.maxKas + 1e-9;
+      if (job.buyBelow > 0 && px <= job.buyBelow && canBuy) {
         job.last = 'buying @ ' + px.toPrecision(4);
         saveAgentJob(job);
         paintAgentStatus();
         const wrappers = await cookWrappers(job.tokenId);
         const wrapped = pickWrappedMarketId(wrappers);
         if (!wrapped) { job.last = 'no wrapper'; saveAgentJob(job); paintAgentStatus(); return; }
-        await runCookOrder({
+        const result = await runCookOrder({
           side: 'buy', amount: String(job.sizeKas), id: job.tokenId, wrapped,
           rest: false, quote: q, limit: job.buyBelow, slip: 2
         });
         job.spentKas = (job.spentKas || 0) + job.sizeKas;
         job.last = 'bought cook · ' + px.toPrecision(4);
+        pushAgentFill(job, 'buy', px, result?.txId, job.sizeKas + ' KAS');
+        noteATradeActivity(job, 'buy', px, result || {});
         saveAgentJob(job);
         afterTx();
       } else {
-        job.last = px.toPrecision(4) + ' KAS · waiting';
+        job.last = (!canBuy ? 'buy cap hit, sells still on · ' : '') + px.toPrecision(4) + ' KAS · waiting';
         saveAgentJob(job);
       }
       paintAgentStatus();
       return;
     }
     const [info, candles] = await Promise.all([
-      lookupKronTick(job.tick),
+      agentLiveInfo(job.tick),
       kronCandles(job.tick, 48).catch(() => [])
     ]);
-    const indexPx = Number(info.price || 0);
+    const indexPx = Number(info?.price || 0);
     let px = indexPx;
     let qBuy = null;
     try {
       qBuy = await quoteKronTrade({ tick: job.tick, side: 'buy', amount: String(job.sizeKas) });
       px = impliedKronPx(qBuy) || indexPx;
       job.preview = {
+        tick: job.tick,
         indexPx,
         ammPx: px,
         tokens: Number(qBuy.tokenOut) / (10 ** Number(qBuy.decimals || 0)),
         graduated: !!qBuy.graduated,
         decimals: Number(qBuy.decimals || 0),
-        change24h: Number(info.change24h || 0)
+        change24h: Number(info?.change24h || 0)
       };
     } catch (qe) {
-      if (!(indexPx > 0)) throw qe;
+      if (!(indexPx > 0)) {
+        job.last = agentSoftErr(qe, job.tick);
+        saveAgentJob(job);
+        paintAgentStatus();
+        return;
+      }
     }
-    if (!(px > 0)) { job.last = 'no KRON AMM quote'; saveAgentJob(job); paintAgentStatus(); return; }
+    if (!(px > 0)) { job.last = job.tick + ' idx retry'; saveAgentJob(job); paintAgentStatus(); return; }
     drawAtChart(candles, 'ag-chart');
     const want = agentWants(job, {
       px,
       candles,
-      graduated: !!(job.preview?.graduated ?? info.graduated),
-      change24h: Number(info.change24h || 0)
+      graduated: !!(job.preview?.graduated ?? info?.graduated),
+      change24h: Number(info?.change24h || 0)
     });
-    const pushFill = (side, fillPx, txId, note) => {
-      job.fills = (job.fills || []).concat({ t: Date.now(), side, px: fillPx, txId: txId || '', note: note || '' }).slice(-8);
-    };
-    if (want.buy && (job.spentKas || 0) + job.sizeKas <= job.maxKas + 1e-9) {
+    const canBuy = (job.spentKas || 0) + job.sizeKas <= Number(job.maxKas || 0) + 1e-9;
+    if (want.buy && canBuy) {
       job.last = 'buying AMM @ ' + px.toPrecision(4);
       saveAgentJob(job);
       paintAgentStatus();
@@ -5167,7 +6134,8 @@ async function tickAgent() {
       job.spentKas = (job.spentKas || 0) + job.sizeKas;
       job.last = 'bought AMM · ' + px.toPrecision(4);
       noteKronFill(result.quote);
-      pushFill('buy', px, result.txId, job.sizeKas + ' KAS');
+      noteATradeActivity(job, 'buy', px, result);
+      pushAgentFill(job, 'buy', px, result.txId, job.sizeKas + ' KAS');
       saveAgentJob(job);
       afterTx();
     } else if (want.sell) {
@@ -5198,17 +6166,19 @@ async function tickAgent() {
       });
       job.last = 'sold AMM · ' + px.toPrecision(4);
       noteKronFill(result.quote);
-      pushFill('sell', px, result.txId, '');
+      noteATradeActivity(job, 'sell', px, result);
+      pushAgentFill(job, 'sell', px, result.txId, '');
       saveAgentJob(job);
       afterTx();
     } else {
-      job.last = fmtPx(px) + ' AMM · ' + (want.why || 'waiting');
+      const capNote = (!canBuy ? 'buy cap hit, sells still on · ' : '');
+      job.last = capNote + fmtPx(px) + ' AMM · ' + (want.why || 'waiting');
       saveAgentJob(job);
     }
     paintAgentStatus();
   } catch (e) {
     const job2 = loadAgentJob() || job;
-    job2.last = errText(e);
+    job2.last = agentSoftErr(e, job.tick);
     saveAgentJob(job2);
     paintAgentStatus();
   } finally {
@@ -5473,7 +6443,7 @@ async function compoundForBet() {
   if ((utxos || []).length < 3) return utxos || [];
   toast('Merging UTXOs so Kaspa accepts the bet…');
   try {
-    await compoundUtxos({ wallet, utxos, signWithKasware: kaswareEnabled() });
+    await compoundUtxos({ wallet, utxos, signWithKasware: kaswareSigning(wallet) || walletIsKaswareChip(wallet) });
   } catch (e) {
     if (!isMassError(e)) throw e;
     throw new Error('Kaspa rejected storage mass. Home → Compound, then hire/bet again.');
@@ -5891,7 +6861,7 @@ function openBoost() {
   haptic();
   openSheet('Boost a token', `
     <label class="field"><span>Ticker</span>
-      <input id="boost-tick" maxlength="12" placeholder="KRON" spellcheck="false" value="${esc(($('at-tick')?.value || 'KRON').toUpperCase())}">
+      <input id="boost-tick" maxlength="12" placeholder="KKDAG" spellcheck="false" value="${esc(($('at-tick')?.value || 'KKDAG').toUpperCase())}">
     </label>
     <p class="muted" style="text-align:left;">Sends ${BOOST_KAS} KAS to this same wallet. Features the ticker here for 24h. Points stack. We never take the KAS.</p>
   `, {
@@ -6437,7 +7407,7 @@ function openTrade(prefill = {}) {
   if (!screen) return;
   screen.classList.remove('hidden');
   screen.setAttribute('aria-hidden', 'false');
-  const tick0 = String(prefill.tick || 'KRON').toUpperCase();
+  const tick0 = String(prefill.tick || 'KKDAG').toUpperCase();
   const side0 = prefill.side === 'sell' ? 'sell' : (prefill.side === 'dca' ? 'dca' : 'buy');
   if ($('trade-ticker')) $('trade-ticker').value = tick0;
   if ($('trade-amount')) $('trade-amount').value = prefill.amount || '';
@@ -6515,7 +7485,7 @@ function syncTradeLabel() {
 async function quoteTradePreview() {
   const box = $('trade-quote');
   const amount = $('trade-amount')?.value.trim();
-  const tick = ($('trade-ticker')?.value || 'KRON').toUpperCase();
+  const tick = ($('trade-ticker')?.value || 'KKDAG').toUpperCase();
   const side = $('trade-side')?.querySelector('.on')?.dataset.side || 'buy';
   if (!box || !amount) return;
   box.innerHTML = `<p class="muted" style="text-align:left;padding:0;">Quoting…</p>`;
@@ -6545,7 +7515,7 @@ async function quoteTradePreview() {
 async function reviewTrade() {
   const go = $('trade-go');
   const amount = $('trade-amount')?.value.trim();
-  const tick = ($('trade-ticker')?.value || 'KRON').toUpperCase();
+  const tick = ($('trade-ticker')?.value || 'KKDAG').toUpperCase();
   const side = $('trade-side')?.querySelector('.on')?.dataset.side || 'buy';
   if (side === 'dca') {
     const job = loadDcaJob();
@@ -6647,13 +7617,24 @@ async function runTrade({ tick, side, amount, quote, forceKasware = false }) {
     if (q?.side === 'buy' && q.tokenOut != null) {
       const tickU = String(q.tick || tick).toUpperCase();
       const row = kccHoldings.find(t => String(t.ticker).toUpperCase() === tickU);
-      if (row) row.balance = (BigInt(row.balance || '0') + BigInt(q.tokenOut)).toString();
-      else {
+      const logo = kronLogoFor(tickU);
+      if (row) {
+        row.balance = (BigInt(row.balance || '0') + BigInt(q.tokenOut)).toString();
+        if (logo && !row.image) row.image = logo;
+        if (q.decimals != null) row.decimals = q.decimals;
+      } else {
         kccHoldings.unshift({
           ticker: tickU, name: tickU, protocol: 'kcc20',
-          balance: String(q.tokenOut), decimals: q.decimals || 0
+          balance: String(q.tokenOut), decimals: q.decimals || 0,
+          image: logo || ''
         });
       }
+      try { kccHoldings = await attachKronLogos(kccHoldings); } catch {}
+      try {
+        const info = await lookupKronTick(tickU);
+        const lq = liveQuote(info);
+        if (lq.price) kronPx[tickU] = { price: lq.price, change24h: lq.change24h };
+      } catch {}
     }
     afterTx();
     if (q?.side === 'buy' && q.tokenOut != null) {
@@ -6664,7 +7645,8 @@ async function runTrade({ tick, side, amount, quote, forceKasware = false }) {
         amount: String(q.tokenOut),
         decimals: q.decimals || 0,
         txId: result.txId || '',
-        label: 'Bought'
+        label: 'Bought',
+        image: kronLogoFor(q.tick || tick)
       });
     } else if (q?.side === 'sell') {
       pushTokenActivity({
@@ -6674,11 +7656,30 @@ async function runTrade({ tick, side, amount, quote, forceKasware = false }) {
         amount: String(q.tokenIn || amount || ''),
         decimals: q.decimals || 0,
         txId: result.txId || '',
-        label: 'Sold'
+        label: 'Sold',
+        image: kronLogoFor(q.tick || tick)
       });
     }
     renderHome();
     if (currentTab === 'tokens') renderTokens();
+    if (q?.side === 'buy' && wallet?.address) {
+      const waitTick = String(q.tick || tick).toUpperCase();
+      (async () => {
+        for (let i = 0; i < 10; i++) {
+          await new Promise(r => setTimeout(r, 1800));
+          try {
+            const rows = await fetchKronAddrHoldings(wallet.address);
+            const hit = (rows || []).find(r => String(r.ticker || '').toUpperCase() === waitTick);
+            if (hit && Number(hit.balance) > 0) {
+              await refreshTokenHoldings();
+              renderHome();
+              if (currentTab === 'tokens') renderTokens();
+              return;
+            }
+          } catch {}
+        }
+      })();
+    }
     openSheet('Swap sent', `
       <div class="kv"><span class="k">Market</span><span class="v">${esc(tick)}</span></div>
       <div class="kv"><span class="k">Side</span><span class="v">${esc(side)}</span></div>
@@ -6699,14 +7700,15 @@ function openCompound() {
   const n = Array.isArray(utxos) ? utxos.length : 0;
   if (n < 2) { toast('Already one UTXO'); return; }
   const feeEst = 0.0045 + n * 0.00015;
-  const kw = kaswareSigning(wallet);
+  if (walletIsKaswareChip(wallet)) autoArmKaswareForWallet(wallet).catch(() => {});
+  const kw = kaswareSigning(wallet) || walletIsKaswareChip(wallet);
   openSheet('Compound UTXOs', `
     <div class="kv"><span class="k">Wallet</span><span class="v">${esc(wallet?.name || 'This wallet')}</span></div>
     <div class="kv"><span class="k">Network</span><span class="v">${isTestnet() ? 'TN10' : 'mainnet'}</span></div>
     <div class="kv"><span class="k">UTXOs now</span><span class="v">${n}</span></div>
     <div class="kv"><span class="k">Balance</span><span class="v">${formatAmount(balanceSompi)} KAS</span></div>
     <div class="kv"><span class="k">Network fee</span><span class="v">~${feeEst.toFixed(4)} KAS</span></div>
-    <p class="muted" style="text-align:left;">Merges <b>every spendable coin in this wallet</b> into <b>one</b> UTXO (no leftover dust). ${kw ? 'KasWare signs a PSKT.' : 'Native PIN signs.'} Same for Wallet 2, WalletX, and KasWare.</p>
+    <p class="muted" style="text-align:left;">Merges <b>every spendable KAS coin</b> into <b>one</b> UTXO. No leftover change coin (that is what left you on 2 UTXOs). ${kw ? 'Approve the PSKT in KasWare — it must show one output.' : 'Native PIN signs.'}</p>
   `, { confirm: kw ? 'Pay with KasWare' : 'Compound now', gold: true, onConfirm: () => runCompound() });
 }
 
@@ -6725,7 +7727,11 @@ function applyCompoundLocal(result) {
 async function runCompound() {
   toast('Connecting to Kaspa…');
   try {
-    const kw = kaswareSigning(wallet);
+    if (walletIsKaswareChip(wallet)) {
+      setSheetStatus('Arming KasWare to sign this chip…');
+      await autoArmKaswareForWallet(wallet);
+    }
+    const kw = kaswareSigning(wallet) || walletIsKaswareChip(wallet);
     if (kw) {
       setSheetStatus('Matching KasWare to ' + (isTestnet() ? 'TN10' : 'mainnet') + '…');
       await ensureKaswareSigner(wallet);
@@ -6787,7 +7793,9 @@ async function refreshVaultBalances() {
 }
 
 function vaultDue(v, daa) {
-  if (!v?.address || v.status === 'swept' || v.type === 'xmss') return false;
+  if (!v?.address || v.status === 'swept' || v.status === 'cancelled' || v.type === 'xmss') return false;
+  if (isDdPayVault(v) || isDcaVault(v)) return false;
+  if (autoSweepFails.get(v.address)?.quiet) return false;
   if (isHopVault(v) && v.params?.beneficiary && v.params.beneficiary !== wallet?.address) return false;
   const at = Number(v.unlockAt || 0);
   if (at && Date.now() + 800 < at) return false;
@@ -6795,6 +7803,16 @@ function vaultDue(v, daa) {
   if (unlock && daa && daa < unlock) return at ? Date.now() >= at : false;
   if (!unlock && !at) return false;
   return true;
+}
+
+function markVaultReturned(v) {
+  if (!v?.address || v.status === 'swept') return;
+  updateVault(v.address, { status: 'swept', fundedSompi: 0 });
+  autoSweepFails.delete(v.address);
+  try { clearTimeout(freezeTimers.get(v.address)); } catch {}
+  freezeTimers.delete(v.address);
+  if (currentTab === 'home') renderHome();
+  if (currentTab === 'vault') renderVault();
 }
 
 function scheduleFreezeWatch(v) {
@@ -6821,18 +7839,26 @@ async function maybeAutoUnlock() {
     const mine = loadVaults().filter(v => v.address && v.type !== 'dca' && v.type !== 'betescrow' && v.type !== 'bet' && (Number(v.unlockDaa) > 0 || Number(v.unlockAt) > 0 || isHopVault(v)));
     for (const v of mine) {
       if (!vaultDue(v, daa)) continue;
+      const fail = autoSweepFails.get(v.address) || { n: 0 };
+      const backoff = Math.min(180000, 15000 * (2 ** Math.min(fail.n, 3)));
       const lastTry = autoSweepTriedAt.get(v.address) || 0;
-      if (lastTry && Date.now() - lastTry < 12000) continue;
+      if (lastTry && Date.now() - lastTry < backoff) continue;
       autoSweepTriedAt.set(v.address, Date.now());
       let utxosV = [];
       try { utxosV = await fetchAddressUtxos(v.address); } catch {}
-      if (!utxosV.length && !isKcc20Vault(v)) continue;
-      toast(isKcc20Vault(v) ? ('Time lock ended — returning ' + (v.tick || 'KCC20') + '…') : 'Time lock ended — returning KAS…');
+      if (!utxosV.length) {
+        markVaultReturned(v);
+        continue;
+      }
+      if (fail.n < 1) {
+        toast(isKcc20Vault(v) ? ('Time lock ended — returning ' + (v.tick || 'KCC20') + '…') : 'Time lock ended — returning KAS…');
+      }
       try {
         const result = isKcc20Vault(v)
           ? await sweepKcc20Capsule({ wallet, vault: v, utxos: utxosV })
           : await sweepVault({ wallet, vault: v, utxos: utxosV });
         updateVault(v.address, { status: 'swept', unlockTxId: result.txId, fundedSompi: 0, tokenAmount: isKcc20Vault(v) ? '0' : v.tokenAmount });
+        autoSweepFails.delete(v.address);
         noteVaultActivity({
           vault: v,
           label: isKcc20Vault(v) ? 'Unfrozen' : 'Unlocked',
@@ -6856,8 +7882,15 @@ async function maybeAutoUnlock() {
         if (currentTab === 'activity') renderActivity(window.__txs || []);
       } catch (e) {
         console.warn('auto-unlock', e);
-        autoSweepTriedAt.set(v.address, Date.now());
-        scheduleFreezeWatch({ ...v, unlockAt: Date.now() + 12000 });
+        const msg = errText(e);
+        const empty = /empty|nothing to unlock|no frozen|no redeem/i.test(msg);
+        const n = (fail.n || 0) + 1;
+        if (empty) {
+          markVaultReturned(v);
+          continue;
+        }
+        autoSweepFails.set(v.address, { n, quiet: n >= 3, lastErr: msg });
+        if (n < 3) scheduleFreezeWatch({ ...v, unlockAt: Date.now() + backoff });
       }
     }
   } catch (e) {
@@ -7899,44 +8932,53 @@ function backendParams(type, params) {
   return out;
 }
 
-async function buildCovenant(p, explicit) {
+async function buildCovenant(p, explicit, opts = {}) {
+  const silent = !!opts.silent;
+  const fail = (msg) => { if (silent) throw new Error(msg); toast(msg); };
   const params = explicit && Object.keys(explicit).length ? { ...explicit } : readProductForm(p.type);
   hydrateNativeKey(wallet);
   if (p.type === 'kcc20lock') {
+    if (silent) throw new Error('KCC20 freeze still uses the in-app Vault sheet. Open Vault → Freeze tokens, or lock native KAS (timelock / sentinel).');
     await executeKcc20Freeze(params);
     return;
   }
   if ((p.type === 'life' || params.lifeKind) && params.tick && params.amountToken) {
+    if (silent) throw new Error('KCC20 life freeze still uses the in-app Vault sheet.');
     await executeKcc20Freeze({ ...params, lifeKind: params.lifeKind, lifeLabel: params.lifeLabel });
     return;
   }
   if (!params.amountKas || !Number.isFinite(Number(params.amountKas))) {
-    toast('Enter an amount like 0.15');
+    fail('Enter an amount like 0.15');
     return;
   }
   if (p.type !== 'life' && (p.type === 'timelock' || p.type === 'sentinel' || p.type === 'recurring' || p.type === 'hashlock')
       && !params.lockDays && !params.lockMinutes) {
-    toast('Enter a duration like 3 minutes');
+    fail('Enter a duration like 3 minutes');
     return;
   }
   if (p.type === 'life' && !params.unlockAnytime && !params.lockMinutes && !params.dueAt) {
-    toast('Need a due date, or say unlock anytime');
+    fail('Need a due date, or say unlock anytime');
     return;
   }
-  if (p.type === 'escrow' && !params.buyerAddress) { toast('Need a buyer address'); return; }
-  if (p.type === 'multisig' && !params.counterparty) { toast('Need a counterparty'); return; }
+  if (p.type === 'escrow' && !params.buyerAddress) { fail('Need a buyer address'); return; }
+  if (p.type === 'multisig' && !params.counterparty) { fail('Need a counterparty'); return; }
   if (p.type === 'multisig' && params.counterparty === wallet.address) {
-    toast('2-of-2 needs a different wallet, not this one');
+    fail('2-of-2 needs a different wallet, not this one');
     return;
   }
   if (p.type === 'multisig' && !walletByAddress(params.counterparty)) {
-    toast('Import the counterparty wallet on You first — Sweep needs both keys on this device');
+    fail('Import the counterparty wallet on You first — Sweep needs both keys on this device');
     return;
   }
-  if (p.type === 'recurring' && !params.payee) { toast('Need a payee kaspa:q address'); return; }
-  if (p.type === 'recurring' && !params.payKas) { toast('Enter how much KAS to pay each check-in'); return; }
+  if (p.type === 'recurring' && !params.payee) { fail('Need a payee kaspa:q address'); return; }
+  if (p.type === 'recurring' && !params.payKas) { fail('Enter how much KAS to pay each check-in'); return; }
+  if (p.type === 'xmss' && !params.kit) { fail('Paste the XMSS public kit JSON (never the private file)'); return; }
+  if (p.type === 'sentinel' && params.beneficiary && !isValidKaspaAddress(params.beneficiary)) {
+    fail('Beneficiary must be a kaspa: address');
+    return;
+  }
 
-  toast('Building P2SH covenant…');
+  if (!silent) toast('Building P2SH covenant…');
   const payload = backendParams(p.type === 'sentinel' || p.type === 'recurring' || p.type === 'hashlock' ? 'timelock' : p.type, params);
   payload.beneficiary = params.beneficiary;
   payload.hopCount = params.hopCount;
@@ -8062,10 +9104,15 @@ async function buildCovenant(p, explicit) {
     if (p.type === 'sentinel' && payload.beneficiary && payload.beneficiary !== wallet.address) {
       mirrorVaultTo(payload.beneficiary, vault);
     }
+    if (silent) return vault;
     renderVault();
     if (life) setVaultTab('life');
     openVaultReady(vault);
-  } catch (e) { toast(errText(e)); }
+    return vault;
+  } catch (e) {
+    if (silent) throw e;
+    toast(errText(e));
+  }
 }
 
 function openVaultReady(vault) {
@@ -8098,7 +9145,8 @@ function openVaultReady(vault) {
   }, { once: true });
 }
 
-async function fundVault(vault) {
+async function fundVault(vault, opts = {}) {
+  const silent = !!opts.silent;
   const amt = vault.params?.amountKas;
   if (amt == null || amt === '') throw new Error('Missing amount');
   if (!wallet?.address) throw new Error('No wallet');
@@ -8109,11 +9157,13 @@ async function fundVault(vault) {
   if (!kaswareSigning(wallet) && !hexKey(wallet.privKey)) {
     throw new Error('This wallet has no native signing key. Import the 64-character hex key, or turn on KasWare for this address.');
   }
-  try {
-    await requirePin('Confirm vault fund');
-  } catch (e) {
-    if (errText(e) === 'cancelled') return;
-    throw e;
+  if (!opts.skipPin) {
+    try {
+      await requirePin('Confirm vault fund');
+    } catch (e) {
+      if (errText(e) === 'cancelled') return;
+      throw e;
+    }
   }
   let result;
   if (kaswareSigning(wallet)) {
@@ -8160,6 +9210,15 @@ async function fundVault(vault) {
   afterTx();
   const lockedKas = Number(result.amountKas || amt);
   const feeKas = Number(result.feeKas || 0);
+  if (silent) {
+    return {
+      txId: result.txId,
+      address: vault.address,
+      type: vault.type,
+      amountKas: lockedKas,
+      feeKas
+    };
+  }
   openSheet('Covenant funded', `
     <div class="kv"><span class="k">Locked in capsule</span><span class="v">${esc(formatKas(lockedKas))} KAS</span></div>
     <div class="kv"><span class="k">Network fee</span><span class="v">${feeKas.toFixed(6)} KAS</span></div>
@@ -8594,8 +9653,8 @@ function bind() {
   });
   click('btn-send', openSend);
   click('btn-receive', openReceive);
-  click('btn-trade', () => openTrade({ tick: 'KRON', side: 'buy' }));
-  click('btn-trade-tokens', () => openTrade({ tick: 'KRON', side: 'buy' }));
+  click('btn-trade', () => openTrade({ tick: 'KKDAG', side: 'buy' }));
+  click('btn-trade-tokens', () => openTrade({ tick: 'KKDAG', side: 'buy' }));
   click('trade-close', hideTradeScreen);
   click('trade-lookup', lookupTradeTicker);
   click('trade-go', () => reviewTrade());
@@ -8640,7 +9699,19 @@ function bind() {
   $('at-sco-mkts')?.addEventListener('click', e => {
     const row = e.target.closest('[data-sco-tick]');
     if (!row?.dataset.scoTick) return;
-    pickCookRow(row.dataset.scoId || '', row.dataset.scoTick, {
+    const tick = row.dataset.scoTick;
+    if (row.dataset.scoKron === '1' || (!isTestnet() && !row.dataset.scoId)) {
+      openAtDesk({
+        venue: 'kron',
+        tick,
+        name: row.dataset.scoName || tick,
+        logo: row.dataset.scoLogo || '',
+        graduated: row.dataset.scoGrad === '1',
+        price: Number(row.dataset.scoPx || 0)
+      });
+      return;
+    }
+    pickCookRow(row.dataset.scoId || '', tick, {
       venue: 'scorpion',
       name: row.dataset.scoName,
       logo: row.dataset.scoLogo,
@@ -8734,7 +9805,20 @@ function bind() {
     syncAgStratUi(b.dataset.strat);
   });
   syncAgStratUi('range');
-  $('ag-tick')?.addEventListener('change', () => refreshAgentPreview().catch(() => {}));
+  $('ag-tick')?.addEventListener('change', () => applyAgentTick($('ag-tick').value, { prefill: true }).catch(() => {}));
+  $('ag-tick')?.addEventListener('input', () => {
+    clearTimeout(agentTickDebounce);
+    agentTickDebounce = setTimeout(() => {
+      const t = ($('ag-tick')?.value || '').trim().toUpperCase();
+      if (validTick(t)) applyAgentTick(t, { prefill: true }).catch(() => {});
+    }, 450);
+  });
+  $('ag-picks')?.addEventListener('click', e => {
+    const b = e.target.closest('[data-ag-pick]');
+    if (!b?.dataset.agPick) return;
+    haptic();
+    applyAgentTick(b.dataset.agPick, { prefill: true }).catch(err => toast(errText(err)));
+  });
   $('ag-size')?.addEventListener('change', () => refreshAgentPreview().catch(() => {}));
   click('boost-open', openBoost);
   $('at-cook-mkts')?.addEventListener('click', e => {
@@ -8748,7 +9832,10 @@ function bind() {
     });
   });
   const atQuoteSoon = () => { clearTimeout(setAtPane._q); setAtPane._q = setTimeout(atQuotePreview, 280); };
-  $('at-tick')?.addEventListener('input', atQuoteSoon);
+  $('at-tick')?.addEventListener('input', () => {
+    atQuoteSoon();
+    if (atSrc === 'scorpion' && !atDesk) renderScorpionMarkets().catch(() => {});
+  });
   $('at-amt')?.addEventListener('input', atQuoteSoon);
   $('at-limit')?.addEventListener('input', atQuoteSoon);
   $('at-slip')?.addEventListener('input', atQuoteSoon);
@@ -8776,6 +9863,7 @@ function bind() {
   });
   click('btn-refresh', () => { haptic(); refreshAll(); toast('Refreshing'); });
   $('btn-compound')?.addEventListener('click', openCompound);
+  $('btn-dd-treasury')?.addEventListener('click', () => openTreasurySweep().catch(e => toast(errText(e))));
   click('btn-vault-short', () => showPage('vault'));
   $('btn-sweep-now')?.addEventListener('click', () => {
     sweepAllVaults().catch(err => toast(errText(err)));
@@ -8899,6 +9987,8 @@ function bind() {
   });
   click('profile-build', openTtt);
   click('ttt-close', closeTtt);
+  click('ttt-fund', openTttFund);
+  click('ttt-sweep', () => openTreasurySweep().catch(e => toast(errText(e))));
   click('build-close', closeBuildRoadmap);
   click('build-back', () => showBuildApp('home'));
   click('studio-go', () => generateStudio().catch(err => toast(errText(err))));
@@ -8987,6 +10077,11 @@ function bind() {
       openLockTimer(vault);
       return;
     }
+    const dd = e.target.closest('[data-dd-cell]');
+    if (dd?.dataset.ddCell) {
+      openTreasurySweep().catch(err => toast(errText(err)));
+      return;
+    }
     const row = e.target.closest('[data-token-key], [data-ticker]');
     if (!row) return;
     if (row.dataset.ticker === 'KAS') { openKasSheet(); return; }
@@ -9031,6 +10126,11 @@ function bind() {
       e.stopPropagation();
       const vault = loadVaults().find(v => v.address === sweepBtn.dataset.sweep);
       if (!vault) { toast('Vault not found'); return; }
+      if (isDdPayVault(vault)) {
+        purgeDdPayVaults();
+        renderVault();
+        return;
+      }
       unlockVault(vault).catch(err => { toast(errText(err)); });
       return;
     }
@@ -9038,11 +10138,15 @@ function bind() {
     if (row?.dataset.vault) openVaultDetail(row.dataset.vault);
   });
   document.addEventListener('visibilitychange', () => {
+    const job = loadAgentJob();
     if (document.visibilityState === 'visible' && wallet) {
       tickLive(true);
       maybeAutoUnlock();
       resumeAgentIfAny();
       resumeDcaIfAny();
+      if (job?.on) holdAgentWake();
+    } else if (job?.on && sessionOpen()) {
+      tickAgent().catch(() => {});
     }
   });
 }
@@ -9078,26 +10182,13 @@ async function init() {
   setInterval(setClock, 1000);
   loadSnaps();
   try { wipeTestDcaNow(); } catch {}
+  try { purgeDdPayVaults(); } catch {}
   try { bind(); } catch (e) {
     console.error(e);
     window.__kccBound = false;
     toast('UI failed to bind — hard refresh. ' + errText(e));
   }
-  const video = document.getElementById('bg-video');
-  const mobileBg = window.matchMedia('(max-width: 520px), (pointer: coarse)').matches;
-  if (mobileBg) {
-    try { video?.pause(); } catch {}
-    if (video) {
-      video.querySelectorAll('source').forEach(s => s.remove());
-      video.removeAttribute('src');
-      try { video.load(); } catch {}
-      video.remove();
-    }
-    document.querySelector('.bg-poster')?.classList.remove('hidden');
-  } else {
-    video?.play?.().catch(() => {});
-    video?.addEventListener('playing', () => document.querySelector('.bg-poster')?.classList.add('hidden'));
-  }
+  document.querySelector('.bg-poster')?.classList.remove('hidden');
   try { applyLook(); } catch {}
   try { saveWalletList(loadWalletList()); } catch {}
   try { paintLockNet(); syncAtVenues(); } catch {}
@@ -9116,19 +10207,23 @@ async function init() {
   if (saved) hydrateNativeKey(saved);
   const hasLocalKey = !!(saved?.address && hexKey(saved.privKey));
   const kaswareOnly = !!(saved?.address && saved?.kasware && !hexKey(saved.privKey));
-  if (hasLocalKey || kaswareOnly) {
+  const hasAnyWallet = !!(saved?.address);
+  if (hasLocalKey || kaswareOnly || hasAnyWallet) {
     wallet = migratePinOnto(saved);
     hydrateNativeKey(wallet);
     applyWalletNetwork(wallet);
     hydrateFromSnap(wallet.address);
-    if (kaswareOnly || (saved.kasware && kaswareSigning(wallet))) {
+    if (restorePersistedSession() || isDappPopup()) {
+      pinUnlockedFor = wallet.id;
+      sessionUnlocked = true;
+    } else if (kaswareOnly || (saved.kasware && kaswareSigning(wallet))) {
       pinUnlockedFor = wallet.id;
       sessionUnlocked = true;
     } else if (!loadPin()) beginPinFlow('set');
     else beginPinFlow('unlock');
   }
   try { await loadCryptoLibs(); } catch { toast('Signing library delayed — check network'); }
-  if (hasLocalKey || kaswareOnly) {
+  if (hasLocalKey || kaswareOnly || hasAnyWallet) {
     wallet = migratePinOnto(saved);
     hydrateNativeKey(wallet);
     if (wallet.privKey && !wallet.pubKey) {
@@ -9139,21 +10234,25 @@ async function init() {
         saveWallet();
       } catch {}
     }
-    if (wallet.kasware && isKaswareInstalled()) {
+    if (wallet.kasware && isKaswareInstalled() && !isDappPopup()) {
       try {
+        await autoArmKaswareForWallet(wallet);
         const p = window.kasware;
         let accounts = [];
         try { accounts = await p.getAccounts(); } catch {}
         let addr = Array.isArray(accounts) ? accounts[0] : accounts;
-        if (!addr && kaswareEnabled()) {
+        if (!addr) {
           const linked = await connectKasware();
           addr = linked.address;
         }
-        if (addr && addr === wallet.address) {
+        if (addr && sameAddrPayload(addr, wallet.address)) {
           pinUnlockedFor = wallet.id;
           sessionUnlocked = true;
         }
       } catch {}
+    } else if (isDappPopup() && wallet) {
+      pinUnlockedFor = wallet.id;
+      sessionUnlocked = true;
     }
     if (sessionOpen() || (wallet.kasware && kaswareSigning(wallet))) {
       pinUnlockedFor = wallet.id;
@@ -9175,6 +10274,7 @@ async function init() {
     }
     await unlockToHome();
   } else {
+    markBooted();
     showPage('lock');
     $('tabbar').classList.remove('show');
     $('nav-title').textContent = 'KCC20';

@@ -33,12 +33,24 @@ script construction.
 | `covenants/hypertree_2layer/` | The core 2-layer XMSS^MT hypertree at 3 scales (2^8 → 2^20 → 2^32 addressable signatures), with genuine on-chain linkage (layer0's root is computed live in-script and fed directly into layer1) |
 | `cold-wallet/` | Air-gapped signing workflow + verification test + QR-transfer design spec |
 | `docs/` | Architecture deep-dive, mainnet proofs, and the GitHub Pages KCC20 Wallet PWA |
-| `wallet/` | KCC20 Wallet PWA — live at [kcc-20-wallet.vercel.app](https://kcc-20-wallet.vercel.app). Beginner clone/run guide: [`wallet/README.md`](wallet/README.md). Built by TTT agent internet. |
+| `wallet/` | KCC20 Wallet PWA — live at [kcc-20-wallet.vercel.app](https://kcc-20-wallet.vercel.app). **Argent** (Vault orb) is the in-app compiler: local English → P2SH. Beginner clone/run guide: [`wallet/README.md`](wallet/README.md). Built by TTT agent internet. |
 | `covenants/sentinel/` | Quantum-safe dead-man's-switch: XMSS check-ins + resettable CLTV timeout, fully generalized customer-key pipeline |
 | `covenants/zkgate_groth16/` | ZK covenant secured by a Groth16 proof (`OpZkPrecompile` tag `0x20`) — circuit, verification key, generic deploy/unlock scripts |
 | `covenants/zkgate_risc0/` | ZK covenant secured by a RISC Zero succinct STARK proof (`OpZkPrecompile` tag `0x21`) — post-quantum, no trusted setup |
 | `x402-kaspa/` | x402 payment scheme adapted to Kaspa: one-shot `exact` scheme + Sentinel-based recurring/subscription billing |
 | `research/` | Privacy roadmap + "beyond Zcash" research backing the RISC0/STARK shielded-pool plan |
+
+## Build your own Argent (SDK)
+
+The PWA agent **Argent** does not compile XMSS on a server. It parses English locally (`wallet/js/intent.js`) and builds P2SH in the browser (`wallet/js/tx.js` `buildCovenant`). An LLM (Nilla-style) may **direct** Argent; Argent compiles; the user PIN-signs. Keys never leave the wallet.
+
+Use the portable SDK so you do not invent a compiler:
+
+- Parser + LLM director prompt: [kcc20-sdk `argent.js`](https://github.com/mrzeku2000XTTT/kcc20-sdk/blob/main/argent.js)
+- Docs: https://kcc20-sdk.vercel.app/argent.html
+- Wallet RPCs: `window.kcc20.compileVault({ type, params })` (P2SH `kaspa:p`) and `window.kcc20.sendKas({ dest, amount })` (plain send)
+
+Fact-check: “send Kaspa to my grandson” is a **plain send**, not a vault. Time Capsule returns to the **owner**. Heir / dead-man is `sentinel` (`params.beneficiary` = his `kaspa:q`). In-app sentinel is Schnorr+CLTV hops shaped like `covenants/sentinel`. Real XMSS vault = `covenants/xmsslock` + `keygen/xmss_keygen.py` public kit (`type: 'xmss'`).
 
 ## Quickstart
 

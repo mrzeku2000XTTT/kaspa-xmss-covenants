@@ -12,13 +12,10 @@
   <link rel="icon" href="assets/icon.png">
   <title>KCC20 Wallet</title>
   <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
-  <link rel="stylesheet" href="css/app.css?v=139">
+  <link rel="stylesheet" href="css/app.css?v=169">
 </head>
 <body>
   <img class="bg-poster" src="assets/bg.jpg" alt="">
-  <video id="bg-video" class="bg-video" autoplay muted loop playsinline poster="assets/bg.jpg">
-    <source src="assets/bg.mp4" type="video/mp4">
-  </video>
   <div class="veil"></div>
   <div class="sheen"></div>
 
@@ -61,6 +58,19 @@
           <button class="btn btn-glass" id="lock-net" type="button" style="margin-bottom:12px;">Network: Mainnet</button>
           <div class="notice">Same hex key on Testnet-10 becomes a kaspatest: address so you can sign Cook / Scorpion natively. KasWare is optional.</div>
         </section>
+        <div class="boot-veil" id="boot-veil">Opening wallet…</div>
+        <script>
+        (function () {
+          var has = false;
+          try {
+            var list = localStorage.getItem('kcc20_wallets_v2');
+            if (list && list.length > 4 && list !== '[]') has = true;
+            var one = localStorage.getItem('kcc20_wallet_v1') || localStorage.getItem('scorpion_wallet');
+            if (one && one.indexOf('address') !== -1) has = true;
+          } catch (e) {}
+          if (has) document.documentElement.classList.add('has-wallet');
+        })();
+        </script>
 
         <!-- HOME -->
         <section class="page home-fit" id="page-home">
@@ -94,6 +104,10 @@
           <button class="glass utxo-bar" id="btn-compound" type="button">
             <span id="utxo-count">0 UTXOs</span>
             <span class="utxo-go">Compound</span>
+          </button>
+          <button class="glass utxo-bar trade-cta hidden" id="btn-dd-treasury" type="button">
+            <span id="dd-treasury-lab">DD treasury</span>
+            <span class="utxo-go">Sweep</span>
           </button>
           <div class="section-label">Holdings · live P&amp;L</div>
           <div class="holdings-pills" id="holdings"></div>
@@ -132,7 +146,7 @@
               <div class="at-ticket">
                 <div class="at-row">
                   <label class="field grow"><span>Ticker</span>
-                    <input id="at-tick" placeholder="KRON / KKDAG" value="KRON" spellcheck="false">
+                    <input id="at-tick" placeholder="KKDAG / KRON" value="KKDAG" spellcheck="false">
                   </label>
                   <label class="field small"><span>Slip %</span>
                     <input id="at-slip" type="number" min="0.1" max="15" step="0.1" value="1">
@@ -219,8 +233,9 @@
             <p class="ag-net" id="ag-net">Network · —</p>
             <div class="ag-preview" id="ag-preview">
               <canvas class="at-chart" id="ag-chart" width="640" height="168" aria-label="Scorpion price"></canvas>
+              <div class="ag-now" id="ag-now">Now —</div>
               <div class="at-stats" id="ag-stats"></div>
-              <div class="at-quote" id="ag-quote">Pick a token. Live AMM quote appears here.</div>
+              <div class="at-quote" id="ag-quote">Pick a KRON token. Live AMM quote and candles load here.</div>
               <div class="ag-fills" id="ag-fills"></div>
             </div>
             <div class="seg ag-strats" id="ag-strat">
@@ -230,15 +245,18 @@
               <button data-strat="curve" type="button">Curve stack</button>
               <button data-strat="fade" type="button">Fade pump</button>
             </div>
-            <p class="at-tiny" id="ag-strat-help">Range: buy under your floor, sell over your ceiling on the live AMM quote.</p>
+            <p class="at-tiny" id="ag-strat-help">Range: buy if live AMM is at or under your floor. Sell if it is at or over your ceiling.</p>
+            <div class="ag-picks" id="ag-picks"></div>
             <div class="at-row">
               <label class="field grow"><span>Token</span>
-                <input id="ag-tick" placeholder="KRON" value="KRON" spellcheck="false">
+                <input id="ag-tick" list="ag-tick-list" placeholder="KKDAG / KRON / IFWEN…" value="KKDAG" spellcheck="false" autocomplete="off">
+                <datalist id="ag-tick-list"></datalist>
               </label>
-              <label class="field small"><span>Size KAS</span>
+              <label class="field small"><span>Size KAS / buy</span>
                 <input id="ag-size" type="number" min="0.05" step="0.05" value="0.15">
               </label>
             </div>
+            <p class="at-tiny" id="ag-size-help">Size KAS is native Kaspa spent on <b>each buy fill</b> — not token units. 0.15 Size KAS means one buy pays 0.15 KAS of this wallet into the selected token. Sells use that same KAS size at the live price to size how many tokens to dump.</p>
             <div class="at-row" id="ag-levels">
               <label class="field grow"><span>Buy below</span>
                 <input id="ag-buy" placeholder="KAS per token" inputmode="decimal">
@@ -249,13 +267,14 @@
             </div>
             <label class="field" id="ag-pct-wrap">
               <span>Dip / fade %</span>
-              <input id="ag-pct" type="number" min="1" max="40" step="1" value="5">
+              <input id="ag-pct" type="number" min="1" max="40" step="1" value="8">
             </label>
             <label class="field"><span>Max KAS this session</span>
               <input id="ag-max" type="number" min="0.15" step="0.15" value="1">
             </label>
+            <p class="at-tiny">Max KAS this session is the <b>buy budget only</b>. Example: Max 1.15 and Size 0.15 → about 7 buys, then Scorpion stops buying. It can still sell tokens it already holds. Spent resets when you Start a new session.</p>
             <button class="btn btn-gold" id="ag-toggle" type="button">Start Scorpion agent</button>
-            <p class="at-quote" id="ag-status">Agent can trade only while this wallet is unlocked. Keys never leave the device or KasWare.</p>
+            <p class="at-quote" id="ag-status">Scorpion signs on this device. It keeps ticking in the background while the PWA stays unlocked. If the phone kills the app, reopen to resume.</p>
           </div>
 
           <div id="at-bet" class="hidden">
@@ -361,11 +380,12 @@
             </div>
             <div class="glass list" id="vault-mine"></div>
             <div class="glass vault-sweep">
+              <p class="muted" style="text-align:left;padding:0 0 10px;">This is for time-capsule <code>kaspa:p</code> vaults only. DD KKDAG cells are on Home — not here.</p>
               <button class="btn btn-gold" id="btn-sweep-now" type="button">Sweep unlocked</button>
               <div class="field" style="margin:10px 0 0;">
-                <input id="sweep-addr" placeholder="kaspa:p… address" spellcheck="false" autocomplete="off">
+                <input id="sweep-addr" placeholder="kaspa:p… vault address" spellcheck="false" autocomplete="off">
               </div>
-              <button class="btn btn-glass" id="btn-sweep-addr" type="button" style="margin-top:8px;height:44px;">Sweep this address</button>
+              <button class="btn btn-glass" id="btn-sweep-addr" type="button" style="margin-top:8px;height:44px;">Sweep this vault</button>
             </div>
           </div>
           <div id="vault-bridge-wrap" class="hidden">
@@ -539,6 +559,7 @@
           <div class="grabber"></div>
           <h3 id="dapp-title">Connect dApp</h3>
           <p class="notice" id="dapp-origin"></p>
+          <div class="dapp-wallets" id="dapp-wallets"></div>
           <div id="dapp-body"></div>
           <div class="btn-row" style="margin-top:16px;">
             <button class="btn btn-glass" id="dapp-reject" type="button">Reject</button>
@@ -551,6 +572,8 @@
         <div class="ttt-head">
           <button type="button" class="trade-x" id="ttt-close">Close</button>
           <h2>TTT</h2>
+          <button type="button" class="ttt-fund ttt-sweep" id="ttt-sweep">Sweep</button>
+          <button type="button" class="ttt-fund" id="ttt-fund">Fund</button>
           <img class="ttt-mark" src="assets/ttt.png" alt="TTT">
         </div>
         <iframe id="ttt-frame" class="ttt-frame" title="tttz.xyz" referrerpolicy="no-referrer-when-downgrade" allow="clipboard-write; fullscreen; storage-access"></iframe>
@@ -673,7 +696,7 @@
         </div>
         <div class="field"><label>Ticker</label>
           <div class="dest-row">
-            <input id="trade-ticker" placeholder="KRON, KROSHI, KKDAG…" maxlength="12" spellcheck="false" autocomplete="off">
+            <input id="trade-ticker" placeholder="KKDAG, KRON, KROSHI…" maxlength="12" spellcheck="false" autocomplete="off">
             <button class="scan-btn" id="trade-lookup" type="button">Go</button>
           </div>
         </div>
@@ -787,7 +810,7 @@
   <script type="module">
     import('./js/iframeVault.js?v=121').then(function (mod) {
       return (mod.restoreIframeVault ? mod.restoreIframeVault() : Promise.resolve()).then(function () {
-        return import('./js/app.js?v=139');
+        return import('./js/app.js?v=177');
       });
     }).catch(function (err) {
       console.error(err);
