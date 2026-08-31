@@ -39,6 +39,26 @@ export function kaswareEnabled() {
   return !!loadKaswarePref().enabled;
 }
 
+function hasNativeHex(w) {
+  const s = String(w?.privKey || '').replace(/^0x/i, '').trim();
+  return /^[0-9a-fA-F]{64}$/.test(s);
+}
+
+/** Named KasWare chip in this app — no in-app key; extension must sign. */
+export function walletIsKaswareChip(w) {
+  if (!w) return false;
+  if (w.kasware && !hasNativeHex(w)) return true;
+  const theirs = kaswareConnectedAddress();
+  if (!hasNativeHex(w) && theirs && sameKasAddr(w.address, theirs)) return true;
+  return false;
+}
+
+export function setKaswareEnabled(on) {
+  const pref = loadKaswarePref();
+  pref.enabled = !!on;
+  saveKaswarePref(pref);
+}
+
 export function kaswareNetName(net) {
   return (net || networkId()) === 'testnet-10' ? 'kaspa_testnet_10' : 'kaspa_mainnet';
 }
@@ -85,17 +105,33 @@ export function kaswareConnectedAddress() {
 }
 
 export function kaswareSigning(wallet) {
-  if (!kaswareEnabled()) return false;
   if (!isKaswareInstalled()) return false;
+  if (!kaswareEnabled() && !walletIsKaswareChip(wallet)) return false;
   const mine = wallet?.address || '';
   const theirs = kaswareConnectedAddress();
+  if (walletIsKaswareChip(wallet) && mine && theirs && sameKasAddr(mine, theirs)) return true;
+  if (walletIsKaswareChip(wallet) && mine && !theirs) return true;
+  if (!kaswareEnabled()) return false;
   if (mine && theirs && sameKasAddr(mine, theirs)) return true;
   if (mine && !theirs) return true;
   return false;
 }
 
+/** When Home is the KasWare-named chip, arm the Settings toggle so Compound/Send pop the extension. */
+export async function autoArmKaswareForWallet(w) {
+  if (!walletIsKaswareChip(w)) return false;
+  if (!isKaswareInstalled()) return false;
+  const pref = loadKaswarePref();
+  pref.enabled = true;
+  if (w?.address) pref.address = pref.address || w.address;
+  saveKaswarePref(pref);
+  try { await ensureKaswareSigner(w); } catch {}
+  return true;
+}
+
 export async function ensureKaswareSigner(wallet) {
-  if (!kaswareEnabled()) return false;
+  if (!kaswareEnabled() && !walletIsKaswareChip(wallet)) return false;
+  if (!kaswareEnabled()) setKaswareEnabled(true);
   const p = kaswareProvider();
   if (!p) throw new Error('KasWare is not in this browser. Open Chrome/Edge with the KasWare extension, then toggle it on in Settings.');
   await syncKaswareNetwork();
@@ -245,6 +281,15 @@ export async function sendKrc20WithKasware({ dest, tick, amtRaw }) {
   return { txId: revealId, revealId, commitTxId: commitId };
 }
 
+function signedJsonFrom(res) {
+  if (typeof res === 'string' && res.length > 2) return res;
+  if (!res || typeof res !== 'object') return '';
+  const s = res.txJsonString || res.signedTx || res.tx || res.data?.txJsonString;
+  if (typeof s === 'string' && s.length > 2) return s;
+  if (Array.isArray(res.inputs) || res.transaction?.inputs) return JSON.stringify(res);
+  return '';
+}
+
 export async function signPsktWithKasware(txJsonString, signInputs) {
   const p = kaswareProvider();
   if (!p) throw new Error('KasWare is not installed');
@@ -257,21 +302,26 @@ export async function signPsktWithKasware(txJsonString, signInputs) {
     index: Number(s.index),
     sighashType: Number(s.sighashType ?? 1)
   }));
-  const payload = { txJsonString: json, options: { signInputs: inputs } };
+  // sign only — we broadcast. KasWare pushTx would hit its node, which often
+  // does not have KRON curve/pool parents and returns "orphan is disallowed".
+  const opts = { signInputs: inputs, broadcast: false };
+  const payload = { txJsonString: json, options: opts };
   let res;
   try {
     res = await fn.call(p, payload);
   } catch (e1) {
+    const recovered = signedJsonFrom(e1) || signedJsonFrom(e1?.data) || signedJsonFrom(e1?.result);
+    if (recovered) return recovered;
     try {
-      res = await fn.call(p, json, { signInputs: inputs });
+      res = await fn.call(p, json, opts);
     } catch (e2) {
+      const recovered2 = signedJsonFrom(e2) || signedJsonFrom(e2?.data);
+      if (recovered2) return recovered2;
       rejectUser(e1);
     }
   }
-  if (typeof res === 'string' && res) return res;
-  if (res && typeof res === 'object') {
-    return res.txJsonString || res.signedTx || res.tx || JSON.stringify(res);
-  }
+  const out = signedJsonFrom(res);
+  if (out) return out;
   throw new Error('KasWare did not return a signed transaction');
 }
 

@@ -1,7 +1,7 @@
 /* KCC20 A-Trade — Cook public API (order book / launch) + local Scorpion agent.
    Never holds keys. Wallet or KasWare signs PSKT; we only broadcast. */
-import { loadKaspaSdk, connectPublicNode } from './tx.js?v=100';
-import { kaswareEnabled, kaswareSigning, ensureKaswareSigner, signPsktWithKasware } from './kasware.js?v=100';
+import { loadKaspaSdk, connectPublicNode, signPsktJson } from './tx.js?v=168';
+import { kaswareEnabled, kaswareSigning, ensureKaswareSigner, signPsktWithKasware } from './kasware.js?v=160';
 
 const COOK_DIRECT = 'https://dev-api-kcc20.kaspa.com';
 const COOK_HOSTED = 'https://kcc-20-wallet.vercel.app';
@@ -89,14 +89,29 @@ export function saveAgentJob(job) {
   else localStorage.setItem(AGENT_KEY, JSON.stringify(job));
 }
 
-function cookFail(e, data, status) {
-  if (data?.error || data?.message || data?.reason) return new Error(data.error || data.message || data.reason);
+function flattenCookMsg(v) {
+  if (v == null || v === '') return '';
+  if (Array.isArray(v)) return v.map(flattenCookMsg).filter(Boolean).join(' · ');
+  if (typeof v === 'object') return v.message || v.error || v.reason || '';
+  return String(v);
+}
+
+function cookFail(e, data, status, statusText) {
+  const detail = flattenCookMsg(data?.message)
+    || flattenCookMsg(data?.error)
+    || flattenCookMsg(data?.reason)
+    || flattenCookMsg(data?.title)
+    || (data?.raw ? String(data.raw).slice(0, 180) : '');
+  if (detail && !/^bad request$/i.test(detail)) return new Error(detail);
   const m = errText(e);
   if (/failed to fetch|networkerror|load failed|network request/i.test(m)) {
     return new Error('Could not reach Cook. Hard-refresh, then Launch again. KasWare on TN10 can sign once Cook answers.');
   }
-  if (status) return new Error('Cook HTTP ' + status + (data?.raw ? ': ' + String(data.raw).slice(0, 140) : ''));
-  return new Error(m);
+  if (Number(status) === 400) {
+    return new Error('Cook rejected this Launch (HTTP 400). Use mintPolicy public, a 2–8 letter ticker, and a funded kaspatest address.');
+  }
+  if (status) return new Error('Cook HTTP ' + status + (statusText && statusText !== String(status) ? ' ' + statusText : '') + (detail ? ': ' + detail : ''));
+  return new Error(m || statusText || 'Cook request failed');
 }
 
 async function cookRequest(path, init) {
@@ -112,7 +127,7 @@ async function cookRequest(path, init) {
       }
       let data = null;
       try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
-      if (!res.ok) throw cookFail(null, data, res.status);
+      if (!res.ok) throw cookFail(null, data, res.status, res.statusText);
       return data;
     } catch (e) {
       const m = errText(e);
@@ -218,12 +233,11 @@ export function pickWrappedMarketId(wrappers) {
 export async function cookDeploy({ walletAddress, ticker, tokenName, maxSupply, premintSupply, mintPricePerTokenSompi }) {
   return cookPost('/kcc20/build/deploy', {
     walletAddress,
-    ownerIdentifier: walletAddress,
     ticker,
     tokenName,
     maxSupply: String(maxSupply || '1000000'),
     premintSupply: String(premintSupply || '0'),
-    mintMode: 'publicMint',
+    mintPolicy: 'public',
     mintPricePerTokenSompi: String(mintPricePerTokenSompi || '0')
   });
 }
@@ -340,12 +354,27 @@ export async function connectTradeRpc(address) {
   throw new Error('Could not reach a public TN10 node. Last: ' + last);
 }
 
+function p2pkSignInputs(txJson, signInputs) {
+  const listed = (signInputs || []).map(s => ({ index: Number(s.index), sighashType: Number(s.sighashType ?? 1) }))
+    .filter(s => Number.isFinite(s.index));
+  try {
+    const tx = JSON.parse(String(txJson || '{}'));
+    const ins = tx.inputs || [];
+    const keep = listed.filter(s => {
+      const inp = ins[s.index] || {};
+      const spk = String(inp.utxo?.scriptPublicKey || inp.scriptPublicKey?.script || inp.scriptPublicKey || '');
+      const hex = spk.replace(/^0x/i, '').replace(/^00/, '');
+      return !/aa20[0-9a-f]{64}87/i.test(hex);
+    });
+    return keep.length ? keep : listed;
+  } catch {
+    return listed;
+  }
+}
+
 export async function signAndBroadcastPskt({ wallet, txJson, signInputs, onStatus }) {
   if (!txJson) throw new Error('Build is not ready to sign');
-  const inputs = (signInputs || []).map(s => ({
-    index: Number(s.index),
-    sighashType: Number(s.sighashType ?? 1)
-  }));
+  const inputs = p2pkSignInputs(txJson, signInputs);
   const k = await loadKaspaSdk();
   let signedJson = txJson;
   const tn = isTestnetAddr(wallet?.address);
@@ -361,25 +390,29 @@ export async function signAndBroadcastPskt({ wallet, txJson, signInputs, onStatu
         : 'No in-app key — turn on KasWare or import a wallet');
     }
     onStatus?.('Signing locally…');
-    const tx = k.Transaction.deserializeFromSafeJSON(txJson);
-    const priv = new k.PrivateKey(wallet.privKey);
-    const want = new Set(inputs.map(s => s.index));
-    const n = tx.inputs.length;
-    for (let i = 0; i < n; i++) {
-      if (want.size && !want.has(i)) continue;
-      const sig = hexish(k.createInputSignature(tx, i, priv, k.SighashType.All));
-      if (!sig || sig.length < 20) throw new Error('Empty signature on input ' + i);
-      tx.inputs[i].signatureScript = sig;
-    }
-    signedJson = tx.serializeToSafeJSON();
+    signedJson = await signPsktJson({ wallet, txJsonString: txJson, signInputs: inputs });
   }
   onStatus?.('Broadcasting…');
-  const { rpc } = await connectTradeRpc(wallet?.address);
-  const tx = k.Transaction.deserializeFromSafeJSON(signedJson);
-  const submitted = await rpc.submitTransaction({ transaction: tx, allowOrphan: false });
-  const txId = submitted?.transactionId || submitted || tx.id;
-  if (!txId) throw new Error('Node did not return a transaction id');
-  return { txId, signedJson };
+  let last = null;
+  for (let i = 0; i < 4; i++) {
+    try {
+      const { rpc } = await connectTradeRpc(wallet?.address);
+      const tx = k.Transaction.deserializeFromSafeJSON(signedJson);
+      const submitted = await rpc.submitTransaction({ transaction: tx, allowOrphan: true });
+      const txId = submitted?.transactionId || submitted || tx.id;
+      if (txId) return { txId, signedJson };
+      last = new Error('Node did not return a transaction id');
+    } catch (e) {
+      last = e;
+      if (/orphan/i.test(errText(e)) && i < 3) {
+        onStatus?.('TN10 node is catching up — retrying broadcast…');
+        await new Promise(r => setTimeout(r, 600 * (i + 1)));
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw last || new Error('Broadcast failed');
 }
 
 export function sompiToKas(s) {

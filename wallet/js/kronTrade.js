@@ -1,8 +1,8 @@
 /* KRON DEX trades via @kronsdk/kron-sdk (v0.17.2). Quotes + builders from the SDK;
    templates from the CORS-open token descriptor; live heads from idx.kron.technology. */
 import * as kron from '../vendor/kron-sdk/index.js';
-import { loadKaspaSdk, connectPublicNode, fetchAddressUtxos } from './tx.js?v=85';
-import { kaswareSigning, signPsktWithKasware, fetchKaswareUtxos } from './kasware.js?v=85';
+import { loadKaspaSdk, connectPublicNode, fetchAddressUtxos, toRpcTransaction } from './tx.js?v=182';
+import { kaswareSigning, signPsktWithKasware, fetchKaswareUtxos } from './kasware.js?v=160';
 
 const IDX = 'https://idx.kron.technology/v1/kcc20';
 const REG = 'https://api.kron.technology';
@@ -39,6 +39,7 @@ function xOnly(wallet) {
 
 async function idx(path) {
   const res = await fetch(IDX + path, { cache: 'no-store' });
+  if (res.status === 404) return null;
   if (!res.ok) throw new Error('KRON indexer HTTP ' + res.status);
   const body = await res.json();
   return body.result;
@@ -47,8 +48,51 @@ async function idx(path) {
 async function idxToken(tick) {
   let r = await idx('/token/' + encodeURIComponent(tick));
   if (Array.isArray(r)) r = r[0];
-  if (!r) throw new Error('Unknown KRON token ' + tick);
-  return r;
+  return r || null;
+}
+
+function tokenFromEntry(entry) {
+  if (!entry) return null;
+  const ext = entry.extensions || {};
+  return {
+    covenantId: entry.covenantId,
+    name: entry.name,
+    dec: entry.decimals,
+    decimals: entry.decimals,
+    graduated: !!ext.graduated,
+    poolCovenantId: ext.poolCovenantId,
+    genesisTxid: ext.genesisTxid,
+    cpState: {}
+  };
+}
+
+export async function resolveKronTick(tick) {
+  const t = String(tick || '').trim().toUpperCase();
+  if (!t || t.includes('?') || !/^[A-Z0-9]{2,12}$/.test(t)) {
+    throw new Error('Ticker like KKDAG or KRON');
+  }
+  await kronTokenlist().catch(() => {});
+  const entry = findKronEntry(t);
+  const live = await idxToken(t).catch(() => null);
+  if (!entry && !live) {
+    const all = (listCache?.tokens || []).map(e => String(e.symbol || '').toUpperCase()).filter(s => s && !s.includes('?'));
+    const hint = all.find(s => s === t.slice(0, s.length) || t.startsWith(s) || s.startsWith(t));
+    throw new Error(t + ' is not a launched KRON KCC20' + (hint ? '. Did you mean ' + hint + '?' : '. Open Scorpion and tap a listed token.'));
+  }
+  const token = live || tokenFromEntry(entry);
+  const q = liveQuote(live || {});
+  return {
+    tick: t,
+    name: (live && live.name) || entry?.name || t,
+    graduated: !!(live?.graduated || entry?.extensions?.graduated),
+    price: q.price,
+    decimals: Number(entry?.decimals ?? live?.dec ?? live?.decimals ?? 0),
+    change24h: q.change24h,
+    volume24h: Number(live?.volume24h || 0),
+    covenantId: live?.covenantId || entry?.covenantId || '',
+    entry,
+    token
+  };
 }
 
 export async function kronTokenlist() {
@@ -60,32 +104,61 @@ export async function kronTokenlist() {
   return listCache;
 }
 
+export function liveQuote(row = {}) {
+  const price = Number(row.price ?? row.priceKas ?? row.px ?? 0);
+  const chg = Number(row.change24h ?? row.change ?? row.chg24h);
+  return {
+    price: Number.isFinite(price) ? price : 0,
+    change24h: Number.isFinite(chg) ? chg : 0
+  };
+}
+
 export async function kronMarkets() {
   const [list, mkts] = await Promise.all([
-    kronTokenlist(),
+    kronTokenlist().catch(() => ({ tokens: [] })),
     idx('/markets').catch(() => [])
   ]);
   const live = new Map();
   for (const m of (Array.isArray(mkts) ? mkts : [])) {
     live.set(String(m.tick || '').toUpperCase(), m);
   }
-  return (list.tokens || []).map(e => {
+  const fromList = (list.tokens || []).map(e => {
     const tick = String(e.symbol || '').toUpperCase();
     const row = live.get(tick) || {};
+    const q = liveQuote(row);
     return {
       tick,
       name: e.name || tick,
       decimals: Number(e.decimals || 0),
       logo: e.logoURI || '',
       graduated: !!(e.extensions?.graduated || row.graduated),
-      price: Number(row.price || 0),
-      change24h: Number(row.change24h || 0),
+      price: q.price,
+      change24h: q.change24h,
       volume24h: Number(row.volume24h || 0),
       tvl: Number(row.tvl || 0),
       covenantId: e.covenantId,
       entry: e
     };
-  }).sort((a, b) => (b.volume24h || 0) - (a.volume24h || 0));
+  });
+  const seen = new Set(fromList.map(x => x.tick));
+  for (const [tick, row] of live) {
+    if (!tick || seen.has(tick)) continue;
+    const q = liveQuote(row);
+    fromList.push({
+      tick,
+      name: row.name || tick,
+      decimals: Number(row.dec ?? row.decimals ?? 0),
+      logo: '',
+      graduated: !!row.graduated,
+      price: q.price,
+      change24h: q.change24h,
+      volume24h: Number(row.volume24h || 0),
+      tvl: Number(row.tvl || 0),
+      covenantId: row.covenantId,
+      entry: null
+    });
+  }
+  return fromList.sort((a, b) => (b.volume24h || 0) - (a.volume24h || 0));
 }
 
 export function findKronEntry(tick) {
@@ -125,22 +198,7 @@ export async function kronCandles(tick, limit = 72) {
 }
 
 export async function lookupKronTick(tick) {
-  const t = String(tick || '').trim().toUpperCase();
-  if (!/^[A-Z0-9]{2,12}$/.test(t)) throw new Error('Enter a ticker like KRON or KKDAG');
-  await kronTokenlist();
-  const token = await idxToken(t);
-  const entry = findKronEntry(t);
-  return {
-    tick: t,
-    name: token.name || entry?.name || t,
-    graduated: !!(token.graduated || entry?.extensions?.graduated),
-    price: Number(token.price || 0),
-    decimals: Number(entry?.decimals ?? token.dec ?? token.decimals ?? 0),
-    change24h: Number(token.change24h || 0),
-    volume24h: Number(token.volume24h || 0),
-    covenantId: token.covenantId || entry?.covenantId || '',
-    entry
-  };
+  return resolveKronTick(tick);
 }
 
 async function descriptor(covid) {
@@ -212,7 +270,8 @@ function curveParams(entry) {
 }
 
 function curveQuoteState(token, entry) {
-  const p = entry.extensions.curveParams;
+  const p = entry.extensions?.curveParams;
+  if (!p) throw new Error('No KRON curve params for this token');
   const cp = token.cpState || {};
   return {
     realKas: BigInt(cp.realKas || 0),
@@ -268,6 +327,7 @@ function decodeCurveRedeem(redeem) {
 
 async function poolHead(tick, tokenCovidHex, poolCovidHex) {
   const head = await idx('/token/' + encodeURIComponent(tick) + '/poolhead');
+  if (!head?.pool) throw new Error('No KRON pool head for ' + tick);
   const tx = await kaspaTx(head.pool.transactionId);
   const res = head.reserves;
   const state = {
@@ -295,11 +355,13 @@ async function poolHead(tick, tokenCovidHex, poolCovidHex) {
 }
 
 async function curveHead(tick, token, entry) {
-  const live = await idxToken(tick);
-  const tokenReserve = BigInt(live.cpState?.tokenReserve || live.tokenReserve || token.tokenReserve || 0);
+  const live = (await idxToken(tick).catch(() => null)) || token || {};
+  const tokenReserve = BigInt(live.cpState?.tokenReserve || live.tokenReserve || token?.tokenReserve || 0);
   const indexerKas = BigInt(live.cpState?.realKas || 0);
-  const trades = await idx('/token/' + encodeURIComponent(tick) + '/trades?limit=2');
+  let trades = await idx('/token/' + encodeURIComponent(tick) + '/trades?limit=8');
   const rows = Array.isArray(trades) ? trades : (trades ? [trades] : []);
+  const genesis = entry?.extensions?.genesisTxid || live.genesisTxid;
+  if (genesis && !rows.some(r => r?.txid === genesis)) rows.push({ txid: genesis });
   let lastErr = new Error('No curve trades yet — cannot locate the live curve');
   for (const row of rows) {
     if (!row?.txid) continue;
@@ -408,10 +470,10 @@ function kronEntryFromIdx(tick, token) {
 }
 
 export async function quoteKronTrade({ tick, side, amount }) {
-  await kronTokenlist().catch(() => {});
-  const token = await idxToken(tick);
+  const resolved = await resolveKronTick(tick);
+  const token = resolved.token;
   const entry = kronEntryFromIdx(tick, token);
-  if (!entry?.covenantId && !token.covenantId) throw new Error(tick + ' is not a KRON KCC20 on idx.kron.technology');
+  if (!entry?.covenantId && !token?.covenantId) throw new Error(tick + ' is not a launched KRON KCC20');
   const graduated = !!(token.graduated || entry.extensions?.graduated);
   const decimals = Number(entry.decimals ?? token.dec ?? token.decimals ?? 0);
   if (side === 'buy') {
@@ -528,14 +590,21 @@ function inputFromUtxo(k, { txid, index, amount, scriptPublicKey, signatureScrip
   });
 }
 
+function isNativeP2pkScript(script) {
+  let h = hexish(script);
+  if (/^000020[0-9a-f]{64}ac$/i.test(h)) h = h.slice(4);
+  return /^20[0-9a-f]{64}ac$/i.test(h);
+}
+
 function restFunding(utxos, address) {
   const list = Array.isArray(utxos) ? utxos : [];
   return list.map(u => {
     const e = u.utxoEntry || u;
     const spk = e.scriptPublicKey || e.script_public_key || {};
-    const script = spk.scriptPublicKey || spk.script_public_key || spk.script || '';
+    const script = hexish(spk.scriptPublicKey || spk.script_public_key || spk.script || e.scriptPublicKey || '');
     const txid = u.outpoint?.transactionId || u.outpoint?.transaction_id;
     if (!txid || !script) return null;
+    if (!isNativeP2pkScript(script)) return null;
     return {
       address,
       outpoint: { transactionId: txid, index: Number(u.outpoint.index || 0) },
@@ -586,6 +655,48 @@ export function mergeFundingSignatures(original, signed, indexes) {
 
 export function kronPsktPlan(asm) {
   return kron.spend.toPsktJson(asm, 1);
+}
+
+/** KasWare needs per-input utxo blobs to sighash P2PK funding. serializeToSafeJSON often drops them. */
+export function attachKronPsktUtxos(json, asm, address) {
+  let o;
+  try { o = JSON.parse(String(json || '')); } catch { return String(json || ''); }
+  const tx = o.transaction || o;
+  const ins = tx.inputs || [];
+  const live = [...(asm?.transaction?.inputs || [])];
+  const fund = new Set(asm?.fundingInputIndexes || []);
+  let missing = 0;
+  for (let i = 0; i < ins.length; i++) {
+    if (!fund.has(i)) continue;
+    const src = live[i]?.utxo;
+    if (!src) { missing += 1; continue; }
+    const script = hexish(src.scriptPublicKey?.script || src.scriptPublicKey);
+    if (!isNativeP2pkScript(script)) { missing += 1; continue; }
+    ins[i].utxo = {
+      address: src.address || address,
+      amount: typeof src.amount === 'bigint' ? src.amount.toString() : String(src.amount),
+      scriptPublicKey: {
+        version: Number(src.scriptPublicKey?.version || 0),
+        script
+      },
+      blockDaaScore: typeof src.blockDaaScore === 'bigint' ? src.blockDaaScore.toString() : String(src.blockDaaScore || 0),
+      isCoinbase: !!src.isCoinbase
+    };
+  }
+  if (missing) {
+    throw new Error('KasWare PSKT missing UTXO data on ' + missing + ' funding input(s). Tap Buy again.');
+  }
+  return JSON.stringify(o);
+}
+
+async function utxosOnNode(rpc, address) {
+  if (!rpc || !address) return [];
+  try {
+    const res = await rpc.getUtxosByAddresses({ addresses: [address] });
+    return [...(res?.entries || [])];
+  } catch {
+    return [];
+  }
 }
 
 function assembleSpend(k, spend, fundingEntries, changeAddress, networkFee) {
@@ -642,7 +753,7 @@ async function connectTradeNode(k) {
 }
 
 async function loadUserTokens(tick, address, { limit = 4, withKas = true } = {}) {
-  const utxos = await idx(`/token/${encodeURIComponent(tick)}/address/${encodeURIComponent(address)}/utxos`);
+  const utxos = (await idx(`/token/${encodeURIComponent(tick)}/address/${encodeURIComponent(address)}/utxos`)) || [];
   const rows = (Array.isArray(utxos) ? utxos : []).filter(u => u?.redeemScriptHex).slice(0, limit);
   const out = await Promise.all(rows.map(async u => {
     const decoded = kron.kcc20.decodeKcc20Redeem(hexBytes(u.redeemScriptHex));
@@ -682,10 +793,10 @@ function pickTokens(pieces, need, maxN) {
 
 export async function executeKronTrade({ wallet, tick, side, amount, utxos, onStatus, forceKasware = false }) {
   const k = await loadKaspaSdk();
-  await kronTokenlist().catch(() => {});
-  const token = await idxToken(tick);
+  const resolved = await resolveKronTick(tick);
+  const token = resolved.token;
   const entry = kronEntryFromIdx(tick, token);
-  if (!entry?.covenantId && !token.covenantId) throw new Error(tick + ' is not a KRON KCC20 on idx.kron.technology');
+  if (!entry?.covenantId && !token?.covenantId) throw new Error(tick + ' is not a launched KRON KCC20');
   const graduated = !!(token.graduated || entry.extensions?.graduated);
   const desc = await descriptor(entry.covenantId || token.covenantId);
   const tokenTpl = templateFromPart(desc.token);
@@ -737,9 +848,18 @@ export async function executeKronTrade({ wallet, tick, side, amount, utxos, onSt
     );
   }
 
+  onStatus?.('Connecting to Kaspa…');
+  const { rpc, url: nodeUrl } = await connectTradeNode(k);
+
   onStatus?.('Selecting KAS UTXOs…');
-  let rest = utxos?.length ? utxos : [];
-  if (kaswareSigning(wallet)) {
+  let rest = [];
+  const nodeRows = await utxosOnNode(rpc, wallet.address);
+  if (nodeRows.length) rest = nodeRows;
+  if (!rest.length && utxos?.length) rest = utxos;
+  if (!rest.length) {
+    try { rest = await fetchAddressUtxos(wallet.address); } catch { rest = []; }
+  }
+  if (!rest.length && kaswareSigning(wallet)) {
     try {
       const kwUtxos = await fetchKaswareUtxos(wallet.address);
       if (kwUtxos.length) rest = kwUtxos;
@@ -759,8 +879,6 @@ export async function executeKronTrade({ wallet, tick, side, amount, utxos, onSt
     throw new Error(`Need about ${Number(needGuess) / 1e8} KAS UTXO in this wallet for the swap (trade + 0.5 KAS cell + network fee).`);
   }
 
-  onStatus?.('Connecting to Kaspa…');
-  const { rpc } = await connectTradeNode(k);
   let asm = assembleSpend(k, spend, funding, wallet.address, 10_000n);
   const fee = kron.spend.estimateNativeFee(k, 'mainnet', asm, 100);
   asm = assembleSpend(k, spend, funding, wallet.address, fee);
@@ -770,6 +888,7 @@ export async function executeKronTrade({ wallet, tick, side, amount, utxos, onSt
     let plan;
     try {
       plan = kronPsktPlan(asm);
+      plan.txJsonString = attachKronPsktUtxos(plan.txJsonString, asm, wallet.address);
     } catch (e) {
       throw new Error('Could not export this KCC20 swap for KasWare: ' + errText(e));
     }
@@ -792,10 +911,81 @@ export async function executeKronTrade({ wallet, tick, side, amount, utxos, onSt
     signFundingP2pk(k, asm.transaction, priv, asm.fundingInputIndexes);
   }
   onStatus?.('Broadcasting KRON trade…');
-  const submitted = await rpc.submitTransaction({ transaction: asm.transaction, allowOrphan: false });
-  const txId = submitted?.transactionId || submitted || asm.transaction.id;
-  if (!txId) throw new Error('Node did not return a transaction id');
+  const txId = await submitKronSigned(rpc, asm.transaction, onStatus, nodeUrl);
   return { txId, fee, quote: quoted, signer: external ? 'kasware' : 'local' };
+}
+
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
+
+function isOrphanReject(e) {
+  return /orphan/i.test(errText(e));
+}
+
+function isSpentHead(e) {
+  return /missing outpoint|already spent|double.?spend|utxo.*not found|no utxo|outpoint.*not found/i.test(errText(e));
+}
+
+function isFalseStack(e) {
+  return /false stack|verify the signature script/i.test(errText(e));
+}
+
+async function trySubmit(rpc, tx, allowOrphan) {
+  const allow = !!allowOrphan;
+  try {
+    const submitted = await rpc.submitTransaction({ transaction: tx, allowOrphan: allow });
+    return submitted?.transactionId || submitted || tx.id || null;
+  } catch (e) {
+    const plain = toRpcTransaction(tx, { version: 1, sigOpCount: 0 });
+    try {
+      const submitted = await rpc.submitTransaction({ transaction: plain, allowOrphan: allow });
+      return submitted?.transactionId || submitted || tx.id || null;
+    } catch {
+      if (allow) throw e;
+      const submitted = await rpc.submitTransaction({ transaction: tx, allowOrphan: true });
+      return submitted?.transactionId || submitted || tx.id || null;
+    }
+  }
+}
+
+function orphanHint() {
+  return 'KRON curve/pool is not on this Kaspa node yet (orphan — not a bad KasWare signature). Wait ~10 seconds, reject leftover KasWare popups, then tap Buy again.';
+}
+
+async function submitKronSigned(rpc0, tx, onStatus, startUrl) {
+  let rpc = rpc0;
+  let lastUrl = startUrl || '';
+  let last = null;
+  for (let n = 0; n < 8; n++) {
+    try {
+      const txId = await trySubmit(rpc, tx, true);
+      if (txId) return txId;
+      last = new Error('Node did not return a transaction id');
+    } catch (e) {
+      last = e;
+      if (isSpentHead(e)) {
+        throw new Error('KRON curve/pool moved before this swap landed. Tap Buy again for a fresh quote.');
+      }
+      if (isFalseStack(e)) {
+        throw new Error('KasWare signature did not verify. Reject leftover popups, hard-refresh this wallet, tap Buy again.');
+      }
+      if (!isOrphanReject(e) && n > 0) throw e;
+      onStatus?.(isOrphanReject(e)
+        ? 'KRON parents not on this node yet — trying another Kaspa node…'
+        : 'Trying another Kaspa node so this KRON swap can land…');
+      try {
+        const next = await connectPublicNode({ force: true, avoid: lastUrl });
+        rpc = next.rpc;
+        lastUrl = next.url || '';
+      } catch (e2) {
+        last = e2;
+      }
+      await sleep(800 * (n + 1));
+    }
+  }
+  if (last && isOrphanReject(last)) throw new Error(orphanHint());
+  throw last || new Error('Node did not return a transaction id');
 }
 
 export function formatKasSompi(n) {
