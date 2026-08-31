@@ -5,6 +5,7 @@ import {
   kaspaRestBase, networkId
 } from './crypto.js?v=90';
 import { kaswareSigning, sendKaspaWithKasware, sendKrc20WithKasware, signPsktWithKasware, fetchKaswareUtxos } from './kasware.js?v=100';
+import * as kron from '../vendor/kron-sdk/index.js';
 
 function API() { return kaspaRestBase(); }
 
@@ -137,6 +138,7 @@ export function toRpcTransaction(tx, opts = {}) {
       sigOpCount
     };
     if (computeBudget != null) row.computeBudget = computeBudget;
+    else if (inp.computeBudget != null) row.computeBudget = Number(inp.computeBudget);
     return row;
   });
   const outputs = [...tx.outputs].map(o => {
@@ -787,10 +789,13 @@ export async function disconnectRpc() {
   _rpcNet = null;
 }
 
-export async function connectPublicNode() {
+export async function connectPublicNode(opts = {}) {
   const k = await loadKaspaSdk();
   const net = networkId();
-  if (_rpc && _rpc.isConnected && _rpcNet === net) return { rpc: _rpc, url: _rpcUrl, reused: true };
+  const avoid = String(opts.avoid || '');
+  if (!opts.force && _rpc && _rpc.isConnected && _rpcNet === net && (!avoid || _rpcUrl !== avoid)) {
+    return { rpc: _rpc, url: _rpcUrl, reused: true };
+  }
   if (_rpc) await disconnectRpc();
 
   const encoding = k.Encoding.Borsh;
@@ -804,6 +809,7 @@ export async function connectPublicNode() {
 
   let last = 'no public node responded';
   for (const url of urls) {
+    if (avoid && url === avoid) continue;
     let rpc = null;
     try {
       rpc = new k.RpcClient({ url, encoding, networkId: net });
@@ -850,10 +856,14 @@ function txUnderCap(k, tx) {
 }
 
 function pickFeeEntries(entries, need, maxN = 2) {
-  const usable = (entries || []).filter(e => e.amount > 0n).sort((a, b) => (a.amount < b.amount ? 1 : -1));
+  const usable = (entries || []).filter(e => e.amount > 0n && !e.redeemHex);
+  if (!usable.length) return [];
+  const sufficient = usable.filter(e => e.amount >= need).sort((a, b) => (a.amount < b.amount ? -1 : 1));
+  if (sufficient.length) return [sufficient[0]];
+  const byLarge = [...usable].sort((a, b) => (a.amount < b.amount ? 1 : -1));
   const picked = [];
   let sum = 0n;
-  for (const e of usable) {
+  for (const e of byLarge) {
     picked.push(e);
     sum += e.amount;
     if (sum >= need) return picked;
@@ -1544,6 +1554,55 @@ function isP2pkAddr(addr, fallback) {
   return /:q/i.test(a) || !a;
 }
 
+/** Schnorr P2PK redeem: <32-byte x-only pubkey> CHECKSIG. Token/covenant scripts must not be merged. */
+function isNativeP2pkScript(script) {
+  return /^20[0-9a-f]{64}ac$/i.test(hexish(script));
+}
+
+function attachUtxosToSafeJson(json, entries, address) {
+  let o;
+  try { o = JSON.parse(String(json || '')); } catch { return String(json || ''); }
+  const tx = o.transaction || o;
+  const ins = tx.inputs || [];
+  const map = new Map();
+  for (const e of entries || []) {
+    const id = String(e.outpoint?.transactionId || '').replace(/^0x/i, '').toLowerCase();
+    map.set(id + ':' + Number(e.outpoint?.index || 0), e);
+  }
+  let missing = 0;
+  for (const inp of ins) {
+    const prev = inp.previousOutpoint || inp.previous_outpoint || {};
+    const id = String(prev.transactionId || prev.transaction_id || '').replace(/^0x/i, '').toLowerCase();
+    const e = map.get(id + ':' + Number(prev.index || 0));
+    if (!e) { missing += 1; continue; }
+    const script = hexish(e.scriptPublicKey?.script || e.scriptPublicKey);
+    const blob = {
+      address: e.address || address,
+      amount: typeof e.amount === 'bigint' ? e.amount.toString() : String(e.amount),
+      scriptPublicKey: {
+        version: Number(e.scriptPublicKey?.version || 0),
+        script
+      },
+      blockDaaScore: typeof e.blockDaaScore === 'bigint' ? e.blockDaaScore.toString() : String(e.blockDaaScore || 0)
+    };
+    inp.utxo = blob;
+  }
+  if (missing) {
+    throw new Error('Compound PSKT missing UTXO data on ' + missing + ' input(s). Tap Compound again.');
+  }
+  return JSON.stringify(o);
+}
+
+function assertKaswareP2pkSigs(tx) {
+  const ins = [...(tx.inputs || [])];
+  for (let i = 0; i < ins.length; i++) {
+    const sig = hexish(ins[i].signatureScript);
+    if (sig.length < 128) {
+      throw new Error('KasWare did not sign input ' + i + ' (false stack if we broadcast). Reject the popup and tap Compound again.');
+    }
+  }
+}
+
 export async function collectSpendableUtxos(wallet) {
   const map = new Map();
   const add = (list, meta = {}) => {
@@ -1552,6 +1611,7 @@ export async function collectSpendableUtxos(wallet) {
       if (!c?.outpoint?.transactionId || !(c.amount > 0n)) continue;
       const addr = u.address || meta.address || wallet.address;
       if (!isP2pkAddr(addr, wallet.address)) continue;
+      if (!isNativeP2pkScript(c.scriptPublicKey?.script || c.scriptPublicKey)) continue;
       const key = utxoKey(c);
       if (!key || map.has(key)) continue;
       map.set(key, {
@@ -1566,7 +1626,7 @@ export async function collectSpendableUtxos(wallet) {
   for (const row of ownedSpendRows(wallet)) {
     try { add(await fetchAddressUtxos(row.address), row); } catch {}
   }
-  if (kaswareSigning(wallet)) {
+  if (kaswareSigning(wallet) || wallet?.kasware) {
     try { add(await fetchKaswareUtxos(wallet.address), { address: wallet.address }); } catch {}
   }
   return [...map.values()];
@@ -1813,54 +1873,97 @@ function spendEntriesFrom(utxos, wallet, opts = {}) {
   }).filter(e => e && e.outpoint?.transactionId && e.amount > 0n && (allowWatch || e.privKey));
 }
 
+function compoundEntryCount(tx) {
+  try { return [...(tx.inputs || [])].length; } catch { return 0; }
+}
+
+function compoundOutputCount(tx) {
+  try { return [...(tx.outputs || [])].length; } catch { return 0; }
+}
+
+async function buildSingleOutputCompound(k, entries, dest, rpc) {
+  const net = networkId();
+  const total = entries.reduce((a, e) => a + e.amount, 0n);
+  const finish = (tx) => {
+    tx.version = 1;
+    prepInputs(tx, { sigOpCount: 0, computeBudget: 10 });
+    try { k.updateTransactionMass(net, tx); } catch {}
+    return tx;
+  };
+  try {
+    const feeRate = await nodeFeeRate(rpc);
+    const built = await k.createTransactions({
+      entries,
+      outputs: [],
+      changeAddress: dest,
+      priorityFee: 0n,
+      feeRate,
+      networkId: net
+    });
+    const pending = (built.transactions || [])[0];
+    const tx = pending?.transaction;
+    if (tx && compoundOutputCount(tx) === 1 && compoundEntryCount(tx) === entries.length) {
+      return finish(tx);
+    }
+  } catch {}
+  let fee = BigInt(Math.min(3_000_000, 550_000 + entries.length * 25_000));
+  if (total <= fee + 10_000n) throw new Error('Balance too small to cover the compound fee');
+  for (let i = 0; i < 8; i++) {
+    const send = total - fee;
+    if (send <= 10_000n) throw new Error('Fee would consume the whole merge');
+    let tx = k.createTransaction(entries, [{ address: dest, amount: send }], 0n, undefined, 1);
+    tx = finish(tx);
+    const nOut = compoundOutputCount(tx);
+    if (nOut === 1) return tx;
+    const kept = [...tx.outputs].reduce((a, o) => a + BigInt(o.value), 0n);
+    fee = total - kept;
+    if (fee < 400_000n) fee += 50_000n;
+    else fee += 50_000n;
+    tx = k.createTransaction(entries, [{ address: dest, amount: total - fee }], 0n, undefined, 1);
+    tx = finish(tx);
+    if (compoundOutputCount(tx) === 1) return tx;
+  }
+  throw new Error('Could not build a one-output merge. Retry Compound.');
+}
+
 export async function compoundUtxos({ wallet, utxos, signWithKasware = false }) {
   const k = await loadKaspaSdk();
-  const external = !!(signWithKasware || (kaswareSigning(wallet) && !wallet?.privKey));
+  const external = !!(signWithKasware || kaswareSigning(wallet) || (wallet?.kasware && !wallet?.privKey));
   const seen = new Set();
   let entries = spendEntriesFrom(utxos, wallet, { allowWatch: external }).filter(e => {
     if (!isP2pkAddr(e.address, wallet.address)) return false;
+    if (!isNativeP2pkScript(e.scriptPublicKey?.script || e.scriptPublicKey)) return false;
     const key = utxoKey(e);
     if (!key || seen.has(key)) return false;
     seen.add(key);
     return true;
   });
-  if (entries.length < 2) throw new Error('Already one UTXO — nothing to compound');
-  entries = [...entries].sort((a, b) => (a.amount < b.amount ? 1 : -1));
-  const total = entries.reduce((a, e) => a + e.amount, 0n);
-  const { rpc, url } = await connectPublicNode();
-  const net = networkId();
-  let fee = BigInt(Math.min(2_500_000, 450_000 + entries.length * 20_000));
-  if (total <= fee + 10_000n) throw new Error('Balance too small to cover the compound fee');
-
-  const assemble = (feeAmt) => {
-    const send = total - feeAmt;
-    if (send <= 0n) throw new Error('Fee would consume the whole merge');
-    const tx = k.createTransaction(
-      entries,
-      [{ address: wallet.address, amount: send }],
-      0n,
-      undefined,
-      1
-    );
-    tx.version = 1;
-    prepInputs(tx, { sigOpCount: 0, computeBudget: 10 });
-    try { k.updateTransactionMass(net, tx); } catch {}
-    if (tx.outputs.length !== 1) {
-      throw new Error('Compound must be a single output — retry');
+  if (entries.length < 2) {
+    const raw = (utxos || []).length;
+    if (raw >= 2 && !external) {
+      throw new Error('This chip has no in-app key. Stay on KasWare — Compound will pop the extension to merge.');
     }
-    return tx;
-  };
-
-  let tx = assemble(fee);
-  const inAmts = entries.map(e => e.amount);
+    throw new Error('Already one UTXO — nothing to compound');
+  }
+  entries = [...entries].sort((a, b) => (a.amount < b.amount ? 1 : -1));
+  const { rpc, url } = await connectPublicNode();
+  let tx = await buildSingleOutputCompound(k, entries, wallet.address, rpc);
+  if (compoundOutputCount(tx) !== 1) {
+    throw new Error('Compound must be a single output — retry');
+  }
   const priv = wallet.privKey && !external ? new k.PrivateKey(wallet.privKey) : null;
   let txId = null;
 
   if (external) {
-    const json = tx.serializeToSafeJSON();
+    let json = tx.serializeToSafeJSON();
+    json = attachUtxosToSafeJson(json, entries, wallet.address);
     const signInputs = [...tx.inputs].map((_, i) => ({ index: i, sighashType: 1 }));
     const signedJson = await signPsktWithKasware(json, signInputs);
     const signed = k.Transaction.deserializeFromSafeJSON(signedJson);
+    if (compoundOutputCount(signed) !== 1) {
+      throw new Error('KasWare added a leftover coin. Reject that popup and tap Compound again — merge must stay one UTXO.');
+    }
+    assertKaswareP2pkSigs(signed);
     txId = await submitSignedRpc(k, rpc, url, signed, {
       sigOpCount: 0,
       computeBudget: 10,
@@ -1870,7 +1973,7 @@ export async function compoundUtxos({ wallet, utxos, signWithKasware = false }) 
   } else {
     if (!priv) throw new Error('Need Native key or KasWare to compound');
     let scripts = meetToccataFee(k, tx, priv, entries, 0n, 0);
-    if (tx.outputs.length !== 1) throw new Error('Compound must be a single output — retry');
+    if (compoundOutputCount(tx) !== 1) throw new Error('Compound must be a single output — retry');
     try {
       txId = await submitSignedRpc(k, rpc, url, tx, {
         sigOpCount: 0,
@@ -1882,8 +1985,13 @@ export async function compoundUtxos({ wallet, utxos, signWithKasware = false }) 
       const need = requiredFeeFromError(e);
       const paid = txInputSum(tx, entries) - txOutputSum(tx);
       if (need && need > paid) {
-        fee = need + 50_000n;
-        tx = assemble(fee);
+        const total = entries.reduce((a, e) => a + e.amount, 0n);
+        const fee = need + 50_000n;
+        tx = k.createTransaction(entries, [{ address: wallet.address, amount: total - fee }], 0n, undefined, 1);
+        tx.version = 1;
+        prepInputs(tx, { sigOpCount: 0, computeBudget: 10 });
+        try { k.updateTransactionMass(networkId(), tx); } catch {}
+        if (compoundOutputCount(tx) !== 1) throw e;
         scripts = signP2pkInputs(k, tx, priv, entries);
         txId = await submitSignedRpc(k, rpc, url, tx, {
           sigOpCount: 0,
@@ -1896,9 +2004,8 @@ export async function compoundUtxos({ wallet, utxos, signWithKasware = false }) 
       }
     }
   }
-  const outAmts = [...tx.outputs].map(o => BigInt(o.value));
-  if (outAmts.length > 1 && !storageMassOk(k, inAmts, outAmts)) {
-    throw new Error('Compound would leave a dust change and blow storage mass. Retry — this merge must be a single output.');
+  if (compoundOutputCount(tx) > 1) {
+    throw new Error('Compound would leave a leftover UTXO. Not broadcast. Tap Compound again.');
   }
   if (!txId) throw new Error('Compound broadcast failed');
   const paidFee = txInputSum(tx, entries) - txOutputSum(tx);
@@ -2105,7 +2212,8 @@ async function revealKrc20({ k, wallet, priv, script, p2shAddr, revealUtxos }) {
 
 const KRON_IDX = 'https://idx.kron.technology';
 const MIN_CELL_KAS = 5_000_000n;
-const CHANGE_CELL_KAS = 8_000_000n; // leftover token cell — distinct from the send cell (KIP-9)
+const COVENANT_DUST = 50_000_000n; // 0.50 KAS — KRON KIP-9 floor for covenant outputs
+const CHANGE_CELL_KAS = 60_000_000n; // 0.60 KAS, never equal dest (equal splits blow mass)
 const P2PK_RE = /^20([0-9a-f]{64})ac$/i;
 const NATIVE_SUBNET = '0000000000000000000000000000000000000000';
 
@@ -2114,39 +2222,56 @@ function kasNeedError(moreSompi) {
   const shown = n <= 0.05 ? '0.05' : (n < 1 ? n.toFixed(2) : n.toFixed(1));
   return new Error(
     `Need about ${shown} more KAS in this wallet as a normal UTXO. ` +
-    `Token cells have to carry enough KAS or Kaspa rejects the send (storage mass). ` +
+    `Token cells have to carry enough KAS or Kaspa rejects the send. ` +
     `Receive a bit of KAS here, then tap Send again.`
   );
 }
 
 function massSplitError() {
   return new Error(
-    'Kaspa storage mass rejected this token split — not a missing-KAS problem (this wallet has funds). ' +
-    'Tap Send now again; leftover tokens will sit in a differently sized KAS cell.'
+    'Kaspa storage mass rejected this token send — not your KAS UTXO count. ' +
+    'Covenant cells need about 0.5 KAS each. Close TTT, tap Fund again; leftover KKDAG will use a differently sized cell.'
   );
+}
+
+function uniqBig(list) {
+  const out = [];
+  for (const n of list) {
+    if (!out.some(x => x === n)) out.push(n);
+  }
+  return out;
 }
 
 function layoutSendKas(k, inAmts, inCellKas, nTok, feeGuess) {
   const inSum = inAmts.reduce((a, b) => a + b, 0n);
-  const keep = inCellKas >= MIN_CELL_KAS ? inCellKas : MIN_CELL_KAS;
-  const keepOpts = [keep, keep + 5_000_000n, 50_000_000n];
+  const destFloor = inCellKas >= COVENANT_DUST ? inCellKas : COVENANT_DUST;
+  const keepOpts = uniqBig([destFloor, COVENANT_DUST, 51_000_000n, 75_000_000n, 100_000_000n, 80_000_000n]);
   const changeOpts = nTok > 1
-    ? [CHANGE_CELL_KAS, 12_000_000n, 7_000_000n, 15_000_000n, 9_000_000n, 6_000_000n, 11_000_000n]
+    ? [CHANGE_CELL_KAS, 51_000_000n, 55_000_000n, 70_000_000n, 80_000_000n, 100_000_000n, 120_000_000n]
     : [0n];
   const dust = 200_000n;
+  const tries = [];
   for (const sendKasAmt of keepOpts) {
+    if (sendKasAmt < COVENANT_DUST) continue;
     for (const ch of changeOpts) {
-      if (nTok > 1 && (ch === sendKasAmt || ch < MIN_CELL_KAS || sendKasAmt < MIN_CELL_KAS)) continue;
+      if (nTok > 1 && (ch === sendKasAmt || ch < COVENANT_DUST)) continue;
       const tokenKas = nTok > 1 ? [sendKasAmt, ch] : [sendKasAmt];
       const tokenOutSum = tokenKas.reduce((a, b) => a + b, 0n);
       const leftover = inSum - tokenOutSum - feeGuess;
       if (leftover < 0n) continue;
       const kasChange = leftover >= dust ? leftover : 0n;
-      const outs = kasChange > 0n ? [...tokenKas, kasChange] : tokenKas;
-      if (storageMassOk(k, inAmts, outs)) return { tokenKas, kasChange, tokenOutSum };
+      tries.push({ tokenKas, kasChange, tokenOutSum, absorb: false });
+      if (kasChange > 0n && nTok >= 1) {
+        const absorbed = nTok > 1 ? [sendKasAmt + kasChange, ch] : [sendKasAmt + kasChange];
+        tries.push({ tokenKas: absorbed, kasChange: 0n, tokenOutSum: tokenOutSum + kasChange, absorb: true });
+      }
     }
   }
-  return null;
+  for (const t of tries) {
+    const outs = t.kasChange > 0n ? [...t.tokenKas, t.kasChange] : t.tokenKas;
+    if (storageMassOk(k, inAmts, outs)) return t;
+  }
+  return tries[0] || null;
 }
 
 function hexToU8(hex) {
@@ -2370,208 +2495,117 @@ export async function sendKcc20({ wallet, dest, token, amountHuman, utxos, onSta
   if (!pieces.length) {
     throw new Error('Found ' + tick + ' on the indexer but could not load the cell UTXOs. Tap Send now again.');
   }
-  pieces.sort((a, b) => (a.tokenAmount < b.tokenAmount ? 1 : -1));
+  pieces.sort((a, b) => (a.tokenAmount < b.tokenAmount ? -1 : 1));
   const totalTok = pieces.reduce((a, p) => a + p.tokenAmount, 0n);
   if (totalTok < sendAmt) throw new Error(`You only hold ${totalTok} ${tick}`);
   const maxIns = Math.max(1, Math.min(4, Number(meta?.maxIns || 4)));
-  let selected = pieces.filter(p => p.tokenAmount >= sendAmt).slice(0, 1);
-  if (!selected.length) {
-    selected = [];
-    let covered = 0n;
-    for (const p of pieces) {
-      selected.push(p);
-      covered += p.tokenAmount;
-      if (covered >= sendAmt) break;
-      if (selected.length >= maxIns) break;
-    }
-    const have = selected.reduce((a, p) => a + p.tokenAmount, 0n);
-    if (have < sendAmt) {
-      throw new Error(`${tick} is split across ${pieces.length} cells. This send needs ${sendAmt} but the largest ${selected.length} cells only hold ${have}. Send ${have} now, then the rest.`);
-    }
+  const selected = pickKcc20Pieces(pieces, sendAmt, maxIns);
+  const haveSel = selected.reduce((a, p) => a + p.tokenAmount, 0n);
+  if (haveSel < sendAmt) {
+    throw new Error(`${tick} is split across ${pieces.length} cells. This send needs ${sendAmt} but ${selected.length} cells only hold ${haveSel}. Send ${haveSel} now, then the rest.`);
   }
   onStatus?.(`Sending ${sendAmt} ${tick} from ${selected.length} cell${selected.length === 1 ? '' : 's'}…`);
 
   const inTok = selected.reduce((a, p) => a + p.tokenAmount, 0n);
   const changeTok = inTok - sendAmt;
   const tpl = { script: selected[0].redeem.script, stateStart: selected[0].redeem.stateStart || 0 };
-  const ownerId = selected[0].redeem.ownerIdentifier;
-  const next = [presenceState(destPk, sendAmt)];
-  if (changeTok > 0n) next.push(presenceState(ownerId, changeTok));
-  const presenceIdx = selected.length;
-  const witnesses = selected.map(() => presenceIdx);
   const inCellKas = selected.reduce((a, p) => a + p.value, 0n);
-  const nTok = next.length;
-  const feeGuess = 500_000n;
-  // Keep the send cell's own KAS (cancels in KIP-9). Leftover tokens get a
-  // differently sized cell from wallet KAS — never 0.2/0.2 or 0.05/0.05 splits.
-  const walletNeed = (nTok > 1 ? CHANGE_CELL_KAS : 0n) + feeGuess + 200_000n;
+  const senderTokens = selected.map(p => ({
+    transactionId: p.transactionId,
+    index: p.index,
+    value: p.value,
+    state: {
+      ownerIdentifier: p.redeem.ownerIdentifier,
+      identifierType: p.redeem.identifierType,
+      amount: p.tokenAmount,
+      isMinter: !!p.redeem.isMinter
+    }
+  }));
 
   onStatus?.('Connecting to Kaspa…');
   const { rpc, url } = await connectPublicNode();
   const walletUtxos = utxos && utxos.length ? utxos : await fetchAddressUtxos(wallet.address);
   const feeEntries = restUtxosToEntries(walletUtxos, wallet.address)
     .sort((a, b) => (a.amount < b.amount ? 1 : -1));
-  const picked = pickFeeEntries(feeEntries, walletNeed, 2);
-  const feeSum = picked.reduce((a, e) => a + e.amount, 0n);
-  if (!picked.length || feeSum < walletNeed) {
-    throw new Error('Too many small UTXOs to send this token. Home → Compound, then bet again.');
+  if (!feeEntries.length) {
+    throw new Error('KAS UTXO did not load for this send. Close TTT, tap Refresh on Home, then Fund again.');
   }
 
-  const inAmts = [...selected.map(p => p.value), ...picked.map(e => e.amount)];
-  let layout = layoutSendKas(k, inAmts, inCellKas, nTok, feeGuess);
-  if (!layout) {
-    const keep = inCellKas >= MIN_CELL_KAS ? inCellKas : MIN_CELL_KAS;
-    const tokenKasFallback = nTok > 1 ? [keep, CHANGE_CELL_KAS] : [keep];
-    const tokenOutSumFb = tokenKasFallback.reduce((a, b) => a + b, 0n);
-    let kasChangeFb = inCellKas + feeSum - tokenOutSumFb - feeGuess;
-    if (kasChangeFb < 200_000n) kasChangeFb = 0n;
-    layout = { tokenKas: tokenKasFallback, kasChange: kasChangeFb, tokenOutSum: tokenOutSumFb };
-  }
-  const tokenKas = layout.tokenKas;
-  const kasChange = layout.kasChange;
-  const tokenOutSum = layout.tokenOutSum;
-  const tokenOuts = next.map((st, i) => ({
-    value: tokenKas[i],
-    spk: k.payToScriptHashScript(materializeKcc20Script(tpl, st))
-  }));
-
-  function spkOf(v) {
-    if (v instanceof k.ScriptPublicKey) return v;
-    if (typeof v === 'string') return new k.ScriptPublicKey(0, v);
-    if (v && (typeof v.script === 'string' || v.script instanceof Uint8Array)) {
-      return new k.ScriptPublicKey(Number(v.version || 0), v.script);
+  // Same layout as Home → Send KRON/KCC20: 0.50 KAS dest cell, 0.51 change cell
+  // so equal splits don't blow mass. Never dump the fee UTXO into the cell
+  // (old destPads jumped to 2/5/10 KAS and kasNeedError was misread as mass).
+  const destPads = [COVENANT_DUST, 51_000_000n, 55_000_000n, 60_000_000n, 75_000_000n];
+  let lastErr = null;
+  for (const destPad of destPads) {
+    try {
+      const spend = kron.kcc20.buildKcc20Send(
+        k, tpl, senderTokens, destPk, sendAmt, selected.length, tokenCovid, { tokenDust: destPad }
+      );
+      if (spend.outputs[0]) spend.outputs[0].value = destPad;
+      if (spend.outputs[1]) {
+        let ch = destPad + 1_000_000n;
+        if (ch < COVENANT_DUST) ch = COVENANT_DUST + 1_000_000n;
+        spend.outputs[1].value = ch;
+      }
+      const covOut = spend.outputs.reduce((s, o) => s + BigInt(o.value), 0n);
+      let need = covOut + 2_000_000n - inCellKas;
+      if (need < 2_000_000n) need = 2_000_000n;
+      const picked = pickFeeEntries(feeEntries, need, 2);
+      if (!picked.length) throw kasNeedError(need);
+      const fundingEntries = picked.map(e => ({
+        address: wallet.address,
+        outpoint: e.outpoint,
+        amount: e.amount,
+        scriptPublicKey: e.scriptPublicKey,
+        blockDaaScore: e.blockDaaScore,
+        isCoinbase: e.isCoinbase
+      }));
+      let asm = kron.spend.assembleNativeTx(k, {
+        spend,
+        fundingEntries,
+        changeAddress: wallet.address,
+        networkFee: 10_000n
+      });
+      if (asm.change < 200_000n) throw kasNeedError(2_000_000n);
+      const networkFee = kron.spend.estimateNativeFee(k, networkId(), asm, 100);
+      asm = kron.spend.assembleNativeTx(k, {
+        spend,
+        fundingEntries,
+        changeAddress: wallet.address,
+        networkFee
+      });
+      if (asm.change < 200_000n) throw kasNeedError(networkFee);
+      const tx = asm.transaction;
+      for (const idx of asm.fundingInputIndexes) {
+        const sig = k.createInputSignature(tx, idx, priv, k.SighashType.All);
+        tx.inputs[idx].signatureScript = hexish(sig);
+      }
+      const scripts = [...tx.inputs].map(inp => hexish(inp.signatureScript));
+      onStatus?.('Broadcasting KCC20 send…');
+      const txId = await submitSignedRpc(k, rpc, url, tx, {
+        sigOpCount: 0,
+        computeBudget: 100,
+        lockTime: 0,
+        scripts
+      });
+      return {
+        txId,
+        revealId: txId,
+        tick,
+        amt: sendAmt.toString(),
+        dest,
+        change: changeTok.toString()
+      };
+    } catch (e) {
+      lastErr = e;
+      const m = errText(e);
+      if (/null pointer/i.test(m)) throw new Error('KCC20 send failed in the Kaspa engine while building the tx. Hard-refresh and try again.');
+      if (/Need about .* more KAS/i.test(m)) throw e;
+      if (!isMassError(e) && !/mass exceeds|storage mass|transaction mass/i.test(m)) throw e;
+      onStatus?.('Storage mass high — retrying with a slightly fatter cell…');
     }
-    throw new Error('Missing script for a KCC20 input');
   }
-  function inputFromUtxo({ txid, index, amount, scriptPublicKey, address, blockDaaScore, isCoinbase, signatureScript, computeBudget }) {
-    const id = String(txid);
-    const idx = Number(index);
-    const spk = spkOf(scriptPublicKey);
-    const utxo = {
-      address: address || undefined,
-      outpoint: { transactionId: id, index: idx },
-      amount: BigInt(amount),
-      scriptPublicKey: { version: Number(spk.version || 0), script: hexish(spk.script) },
-      blockDaaScore: BigInt(blockDaaScore || 0),
-      isCoinbase: !!isCoinbase
-    };
-    return new k.TransactionInput({
-      previousOutpoint: new k.TransactionOutpoint(new k.Hash(id), idx),
-      signatureScript: signatureScript || '',
-      sequence: 0n,
-      sigOpCount: 0,
-      computeBudget: Number(computeBudget || 10),
-      utxo
-    });
-  }
-  let tx;
-  let scripts;
-  let signKasInputs;
-  let inSum;
-  try {
-  const tokenIns = selected.map(p => {
-    const redeem = p.redeem.script;
-    const spk = k.payToScriptHashScript(redeem);
-    return inputFromUtxo({
-      txid: p.transactionId,
-      index: p.index,
-      amount: p.value,
-      scriptPublicKey: spk,
-      address: String(k.addressFromScriptPublicKey(spk, 'mainnet') || ''),
-      signatureScript: transferSigScript(k, redeem, next, witnesses),
-      computeBudget: 100
-    });
-  });
-  const tokenScripts = tokenIns.map(inp => hexish(inp.signatureScript));
-  const kasIns = picked.map(e => inputFromUtxo({
-    txid: e.outpoint.transactionId,
-    index: e.outpoint.index,
-    amount: e.amount,
-    scriptPublicKey: e.scriptPublicKey,
-    address: wallet.address,
-    blockDaaScore: e.blockDaaScore,
-    isCoinbase: e.isCoinbase,
-    computeBudget: 10
-  }));
-  const covOutputs = tokenOuts.map(o =>
-    new k.TransactionOutput(o.value, o.spk, new k.CovenantBinding(0, new k.Hash(tokenCovid)))
-  );
-  inSum = inCellKas + feeSum;
-  const changeSpk = k.payToAddressScript(wallet.address);
-  const outputs = kasChange > 0n
-    ? [...covOutputs, new k.TransactionOutput(kasChange, changeSpk)]
-    : covOutputs;
-
-  tx = new k.Transaction({
-    version: 1,
-    inputs: [...tokenIns, ...kasIns],
-    outputs,
-    lockTime: 0n,
-    gas: 0n,
-    payload: '',
-    subnetworkId: NATIVE_SUBNET
-  });
-  prepInputs(tx, { sigOpCount: 0, computeBudget: 10 });
-  const tokenN = tokenIns.length;
-  for (let i = 0; i < tokenN; i++) {
-    tx.inputs[i].computeBudget = 100;
-    tx.inputs[i].signatureScript = tokenScripts[i];
-  }
-  try { k.updateTransactionMass(networkId(), tx); } catch {}
-  if (!txUnderCap(k, tx)) {
-    throw new Error('Too many small UTXOs to send this token. Home → Compound, then bet again.');
-  }
-
-  signKasInputs = function signKasInputs() {
-    const signed = tokenScripts.slice();
-    for (let i = tokenN; i < tx.inputs.length; i++) {
-      const sig = k.createInputSignature(tx, i, priv, k.SighashType.All);
-      tx.inputs[i].signatureScript = hexish(sig);
-      signed.push(hexish(sig));
-    }
-    return signed;
-  };
-  scripts = signKasInputs();
-  } catch (e) {
-    const m = errText(e);
-    if (/null pointer/i.test(m)) throw new Error('KCC20 send failed in the Kaspa engine while building the tx. Hard-refresh and try 20 KKDAG again.');
-    throw e;
-  }
-  onStatus?.('Broadcasting KCC20 send…');
-  let txId;
-  try {
-    txId = await submitSignedRpc(k, rpc, url, tx, {
-      sigOpCount: 0,
-      computeBudget: 100,
-      lockTime: 0,
-      scripts
-    });
-  } catch (e) {
-    if (isMassError(e)) throw massSplitError();
-    const need = requiredFeeFromError(e);
-    if (!need) throw e;
-    const paid = inSum - [...tx.outputs].reduce((a, o) => a + BigInt(o.value), 0n);
-    if (need <= paid) throw e;
-    const last = tx.outputs.length - 1;
-    const extra = need - paid + 50_000n;
-    if (kasChange <= extra) throw e;
-    tx.outputs[last].value = BigInt(tx.outputs[last].value) - extra;
-    const scripts2 = signKasInputs();
-    txId = await submitSignedRpc(k, rpc, url, tx, {
-      sigOpCount: 0,
-      computeBudget: 100,
-      lockTime: 0,
-      scripts: scripts2
-    });
-  }
-  return {
-    txId,
-    revealId: txId,
-    tick,
-    amt: sendAmt.toString(),
-    dest,
-    change: changeTok.toString()
-  };
+  throw lastErr || massSplitError();
 }
 
 const WITNESS_KAS = 20_000_000n; // 0.2 KAS co-present CLTV UTXO — SCRIPT_HASH witness + sweep fee
@@ -2654,16 +2688,19 @@ function kccInputFromUtxo(k, {
 }
 
 function pickKcc20Pieces(pieces, sendAmt, maxIns) {
-  let selected = pieces.filter(p => p.tokenAmount >= sendAmt).slice(0, 1);
-  if (!selected.length) {
-    selected = [];
-    let covered = 0n;
-    for (const p of pieces) {
-      selected.push(p);
-      covered += p.tokenAmount;
-      if (covered >= sendAmt) break;
-      if (selected.length >= maxIns) break;
-    }
+  const exact = (pieces || []).filter(p => p.tokenAmount === sendAmt);
+  if (exact.length) return [exact[0]];
+  const cover = (pieces || []).filter(p => p.tokenAmount >= sendAmt)
+    .sort((a, b) => (a.tokenAmount < b.tokenAmount ? -1 : a.tokenAmount > b.tokenAmount ? 1 : 0));
+  if (cover.length) return [cover[0]];
+  const selected = [];
+  let covered = 0n;
+  const bigFirst = [...(pieces || [])].sort((a, b) => (a.tokenAmount < b.tokenAmount ? 1 : -1));
+  for (const p of bigFirst) {
+    selected.push(p);
+    covered += p.tokenAmount;
+    if (covered >= sendAmt) break;
+    if (selected.length >= maxIns) break;
   }
   return selected;
 }
@@ -3176,7 +3213,42 @@ function toRawLocal(human, decimals) {
   return raw.toString();
 }
 
-/** Sign a dApp PSKT JSON with the native key. Never returns the private key. */
+function payloadOfKaspaAddr(a) {
+  return String(a || '').replace(/^kaspa(test)?:/i, '').toLowerCase();
+}
+
+function psktInputAddr(inp) {
+  const u = inp?.utxo || inp?.utxoEntry || {};
+  return String(u.address || inp?.address || '');
+}
+
+function psktHasSig(inp) {
+  try {
+    const s = hexish(inp?.signatureScript);
+    return !!(s && s.length >= 20);
+  } catch {
+    return false;
+  }
+}
+
+function psktSpkHex(inp) {
+  try {
+    const u = inp?.utxo || inp?.utxoEntry || {};
+    const spk = u.scriptPublicKey || inp?.scriptPublicKey;
+    return hexish(spk?.script || spk?.scriptPublicKey || spk).toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+function psktIsP2sh(inp) {
+  const h = psktSpkHex(inp);
+  return h.startsWith('aa20') && /87$/.test(h);
+}
+
+/** Sign a dApp PSKT JSON with the native key. Never returns the private key.
+ *  KIP-12: sign only listed inputs. If the dApp omits signInputs, sign only
+ *  unsigned inputs owned by this wallet — never re-sign covenant / P2SH inputs. */
 export async function signPsktJson({ wallet, txJsonString, signInputs }) {
   const k = await loadKaspaSdk();
   const json = String(txJsonString || '');
@@ -3189,15 +3261,58 @@ export async function signPsktJson({ wallet, txJsonString, signInputs }) {
   }
   const priv = privKeyFromWallet(k, wallet);
   const n = tx.inputs.length;
-  const listed = Array.isArray(signInputs) ? signInputs : [];
-  const want = listed.length
-    ? new Set(listed.map(s => Number(s.index)))
-    : new Set([...Array(n).keys()]);
+  const listed = (Array.isArray(signInputs) ? signInputs : []).filter(s => Number.isFinite(Number(s.index)));
+  const mine = payloadOfKaspaAddr(wallet.address);
+  const want = new Set();
+  const consider = [];
+  if (listed.length) {
+    for (const s of listed) {
+      const i = Number(s.index);
+      if (i >= 0 && i < n) consider.push(i);
+    }
+  } else {
+    for (let i = 0; i < n; i++) consider.push(i);
+  }
+  for (const i of consider) {
+    const inp = tx.inputs[i];
+    if (psktHasSig(inp) || psktIsP2sh(inp)) continue;
+    const addr = payloadOfKaspaAddr(psktInputAddr(inp));
+    if (addr && mine && addr !== mine) continue;
+    want.add(i);
+  }
+  if (!want.size) {
+    throw new Error('No inputs for this wallet to sign. Pass options.signInputs with this wallet’s input indexes (do not list covenant inputs).');
+  }
   for (let i = 0; i < n; i++) {
     if (!want.has(i)) continue;
+    const row = listed.find(s => Number(s.index) === i);
+    const sighash = Number(row?.sighashType ?? 1);
+    if (sighash !== 1 && sighash !== k.SighashType?.All) {
+      throw new Error('This wallet only signs SIGHASH_ALL (1). Input ' + i + ' asked for ' + sighash);
+    }
     const sig = hexish(k.createInputSignature(tx, i, priv, k.SighashType.All));
     if (!sig || sig.length < 20) throw new Error('Empty signature on input ' + i);
     tx.inputs[i].signatureScript = sig;
   }
   return tx.serializeToSafeJSON();
+}
+
+/** Broadcast a signed Safe-JSON transaction. Used by dApp pushTx. */
+export async function pushSignedPskt(txJsonString) {
+  const k = await loadKaspaSdk();
+  const json = String(txJsonString || '');
+  if (!json) throw new Error('No signed transaction to broadcast');
+  let tx;
+  try {
+    tx = k.Transaction.deserializeFromSafeJSON(json);
+  } catch {
+    throw new Error('Signed PSKT could not be read');
+  }
+  const { rpc, url } = await connectPublicNode();
+  const txId = await submitSignedRpc(k, rpc, url, tx, {
+    sigOpCount: 0,
+    computeBudget: 10,
+    lockTime: Number(tx.lockTime || 0)
+  });
+  return { txId, node: url };
 }
