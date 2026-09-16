@@ -1,6 +1,52 @@
 /** SilverScript v1.0.0 covenant templates. Compiles with official silverc. */
 export const TEMPLATES = [
   {
+    id: "searchvault",
+    name: "Search Kaspa vault",
+    tag: "Search",
+    blurb: "Meter 0.001 KAS per search from a prepaid covenant. No timelock.",
+    keywords: /search\s*kaspa|search\s*fee|0\.001|pay_search_fee|meter/i,
+    summary: "User funds a SearchVault UTXO once. Each pay_search_fee (owner-signed) pays EXACTLY 100000 sompi to the Search Kaspa treasury P2PK and recreates this same covenant with the remainder minus miner fee. unlock returns the rest to the owner. No CLTV. Compile with silverc v1.0.0; KCC20 Argent funds the kaspa:p after you paste the artifact.",
+    rules: [
+      "FEE = 100000 sompi (0.001 KAS) to feeRecipient only.",
+      "tx.outputs.length == 2. Change scriptPubKey == this.activeScriptPubKey.",
+      "change == input - FEE - MINER_FEE (1000 sompi convention).",
+      "Owner must sign every search (anti-grief). Owner unlocks remainder to their P2PK.",
+      "No tx.time / this.ageDaa. UTXO spend-once is the nonce.",
+    ],
+    ctorArgs: [
+      { kind: "bytes", value: "OWNER_SCHNORR_PUBKEY_32", note: "searcher Schnorr pubkey" },
+      { kind: "bytes", value: "TREASURY_SCHNORR_PUBKEY_32", note: "Search Kaspa fee recipient pubkey (not a kaspa:q string)" },
+    ],
+    sil: `pragma silverscript ^1.0.0;
+
+contract SearchVault(pubkey owner, pubkey feeRecipient) {
+    int constant FEE_SOMPI = 100000;
+    int constant MINER_FEE = 1000;
+
+    entry pay_search_fee(sig ownerSig) {
+        require(checkSig(ownerSig, owner));
+        require(tx.outputs.length == 2);
+        byte[36] feeSpk = new ScriptPubKeyP2PK(feeRecipient);
+        require(tx.outputs[0].scriptPubKey == byte[](feeSpk));
+        require(tx.outputs[0].value == FEE_SOMPI);
+        require(tx.outputs[1].scriptPubKey == this.activeScriptPubKey);
+        int inVal = tx.inputs[this.activeInputIndex].value;
+        int change = inVal - FEE_SOMPI - MINER_FEE;
+        require(change > 0);
+        require(tx.outputs[1].value == change);
+    }
+
+    entry unlock(sig ownerSig) {
+        require(checkSig(ownerSig, owner));
+        require(tx.outputs.length == 1);
+        byte[36] ownerSpk = new ScriptPubKeyP2PK(owner);
+        require(tx.outputs[0].scriptPubKey == byte[](ownerSpk));
+    }
+}
+`,
+  },
+  {
     id: "vesting",
     name: "Vesting lock",
     tag: "Time",
