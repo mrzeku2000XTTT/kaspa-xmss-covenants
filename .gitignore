@@ -7,3 +7,8 @@ __pycache__/
 *.log
 /tmp/
 wallet/assets/verify-*.png
+
+# metered-chat worker secrets (sandbox-only)
+metered-chat/worker/keys/
+metered-chat/worker/out/
+metered-chat/worker/node_modules/

@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Covenants++ · Metered AI Chat</title>
+<meta name="theme-color" content="#000000">
+<style>
+  :root{
+    --bg:#000; --card:rgba(28,28,30,.92); --card2:rgba(44,44,46,.6);
+    --line:rgba(255,255,255,.09); --txt:#f5f5f7; --dim:#98989f;
+    --vio:#a78bfa; --vio2:#7c3aed; --ok:#34d399; --warn:#fbbf24; --bad:#f87171;
+    --radius:20px;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Roboto,sans-serif;
+    min-height:100vh;padding:env(safe-area-inset-top) 16px 32px;display:flex;justify-content:center}
+  .wrap{width:100%;max-width:560px}
+  .hdr{display:flex;align-items:center;justify-content:space-between;padding:18px 4px 6px}
+  .logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:19px;letter-spacing:.2px}
+  .logo .glyph{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;
+    background:linear-gradient(135deg,var(--vio2),#4c1d95);font-size:18px}
+  .tag{font-size:11px;color:var(--dim);margin-top:2px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+    padding:20px;margin-top:14px;backdrop-filter:blur(20px)}
+  h2{font-size:17px;margin:0 0 6px}
+  p{font-size:14px;line-height:1.5;color:var(--dim);margin:6px 0}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;word-break:break-all}
+  button{width:100%;border:none;border-radius:14px;padding:14px;font-size:15px;font-weight:600;
+    color:#fff;background:linear-gradient(135deg,var(--vio2),var(--vio));cursor:pointer;margin-top:12px}
+  button:disabled{opacity:.45;cursor:default}
+  button.ghost{background:var(--card2);border:1px solid var(--line);color:var(--txt)}
+  input,select{width:100%;background:var(--card2);border:1px solid var(--line);border-radius:12px;
+    padding:12px;color:var(--txt);font-size:15px;margin-top:8px}
+  .kv{display:flex;justify-content:space-between;align-items:baseline;padding:9px 0;
+    border-bottom:1px solid var(--line);font-size:13px}
+  .kv:last-child{border-bottom:none}
+  .kv b{font-weight:600;color:var(--txt)}
+  .pill{display:inline-block;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:600}
+  .pill.wait{background:rgba(251,191,36,.15);color:var(--warn)}
+  .pill.live{background:rgba(52,211,153,.15);color:var(--ok)}
+  .pill.bad{background:rgba(248,113,113,.15);color:var(--bad)}
+  .steps{display:flex;gap:6px;margin:14px 0 4px}
+  .steps i{flex:1;height:4px;border-radius:2px;background:var(--card2)}
+  .steps i.on{background:var(--vio)}
+  .chat{display:flex;flex-direction:column;gap:10px;min-height:200px;max-height:46vh;overflow-y:auto;padding:4px}
+  .msg{max-width:82%;padding:11px 14px;border-radius:16px;font-size:14px;line-height:1.45;white-space:pre-wrap}
+  .msg.u{align-self:flex-end;background:linear-gradient(135deg,var(--vio2),var(--vio));border-bottom-right-radius:5px}
+  .msg.a{align-self:flex-start;background:var(--card2);border:1px solid var(--line);border-bottom-left-radius:5px}
+  .meter{display:flex;align-items:center;gap:10px;margin:12px 0 2px;font-size:12px;color:var(--dim)}
+  .bar{flex:1;height:6px;border-radius:3px;background:var(--card2);overflow:hidden}
+  .bar i{display:block;height:100%;background:linear-gradient(90deg,var(--ok),var(--vio));border-radius:3px;transition:width .4s}
+  .row{display:flex;gap:8px}
+  .row input{margin-top:0}
+  .row button{margin-top:0;width:auto;padding:12px 18px}
+  .hidden{display:none}
+  .fine{font-size:11px;color:var(--dim);line-height:1.5;margin-top:10px}
+  a{color:var(--vio);text-decoration:none}
+  .err{color:var(--bad);font-size:13px;margin-top:8px;white-space:pre-wrap}
+  .spinner{width:16px;height:16px;border:2px solid var(--vio);border-top-color:transparent;
+    border-radius:50%;animation:spin 1s linear infinite;display:inline-block;vertical-align:-3px}
+  @keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="hdr">
+    <div class="logo"><div class="glyph">𐤊</div>
+      <div>Covenants++<div class="tag">metered AI chat · Kaspa sentinel-x402</div></div>
+    </div>
+    <span class="pill wait" id="statusPill">idle</span>
+  </div>
+  <div class="steps" id="steps"><i></i><i></i><i></i><i></i></div>
+
+  <!-- STEP 1: KEY -->
+  <div class="card" id="cardKey">
+    <h2>Connect a Kaspa key</h2>
+    <p>Your key is generated and stored in this browser only. It never leaves this device — the backend sees only your address.</p>
+    <div id="keyBox">
+      <button id="btnGen">Generate new key</button>
+      <button class="ghost" id="btnImp">Import existing key (hex)</button>
+      <div class="hidden" id="impRow">
+        <input id="impKey" class="mono" placeholder="private key hex…">
+        <button id="btnImpGo">Import</button>
+      </div>
+    </div>
+    <div class="hidden" id="keyInfo">
+      <div class="kv"><span>Your address</span><b class="mono" id="myAddr"></b></div>
+      <div class="kv"><span>Balance check</span><b class="mono" id="myBal">…</b></div>
+      <button class="ghost" id="btnKeyOut">Use a different key</button>
+    </div>
+    <div class="err hidden" id="keyErr"></div>
+  </div>
+
+  <!-- STEP 2: PLAN + COVENANT -->
+  <div class="card hidden" id="cardPlan">
+    <h2>Choose your plan</h2>
+    <p>Each <b>bundle</b> = 10 AI replies, paid 0.3 KAS on-chain per bundle. Unspent value refunds to your address after the epoch deadline. No subscription, no custodian.</p>
+    <div class="kv"><span>Bundles (epochs)</span>
+      <b><select id="planEpochs" style="width:90px;margin:0">
+        <option value="1">1 · 0.9 KAS</option><option value="2">2 · 1.6 KAS</option>
+        <option value="3" selected>3 · 2.4 KAS</option><option value="5">5 · 3.9 KAS</option></select></b></div>
+    <button id="btnRequest">Request covenant <span class="mono" id="planPrice">(2.4 KAS)</span></button>
+    <p class="fine" id="planFine">Deposit: 2.4 KAS · 30 replies total · CLTV refund after 7 days per epoch</p>
+  </div>
+
+  <div class="card hidden" id="cardBuild">
+    <h2><span class="spinner"></span> &nbsp;Minting your covenant chain</h2>
+    <p>The operator is generating your post-quantum XMSS worker keys and hop chain. This takes a moment — leave this page open.</p>
+  </div>
+
+  <!-- STEP 3: FUND -->
+  <div class="card hidden" id="cardFund">
+    <h2>Fund your covenant</h2>
+    <p>Send exactly <b id="fundAmt">2.4 KAS</b> to your session covenant. Or sign it right here — your key, your UTXOs, your browser.</p>
+    <div class="kv"><span>Covenant (hop 0)</span><b class="mono" id="covAddr"></b></div>
+    <button class="ghost" id="btnCopyCov">Copy covenant address</button>
+    <button id="btnFund">Fund from my wallet (PSKT-style)</button>
+    <button class="ghost" id="btnFundManual">I sent it manually</button>
+    <div class="err hidden" id="fundErr"></div>
+    <p class="fine">Manual funding: send <b id="fundAmt2">2.4 KAS</b> to the covenant address, then tap "I sent it".</p>
+  </div>
+
+  <!-- STEP 4: CHAT -->
+  <div class="card hidden" id="cardChat">
+    <h2>Chat <span class="pill live" id="chatCredits"></span></h2>
+    <div class="chat" id="chatLog"></div>
+    <div class="meter"><div class="bar"><i id="creditBar"></i></div><span id="meterTxt"></span></div>
+    <div class="row"><input id="msgInput" placeholder="Ask anything…"><button id="btnSend">Send</button></div>
+    <div class="err hidden" id="chatErr"></div>
+    <p class="fine" id="refundFine"></p>
+  </div>
+
+  <p class="fine" style="text-align:center;margin-top:16px">Sentinel-x402 · one CLTV-hop chain per customer · refunds are trustless (no signature exists) · <a href="https://github.com/mrzeku2000XTTT/kaspa-xmss-covenants" target="_blank">protocol</a></p>
+</div>
+
+<script type="module">
+const API = 'https://base44.app/api/apps/6a444b036408e68ec8d6f2a6/functions/meteredChat';
+const KAS_API = 'https://api.kaspa.org';
+const KEY_STORE = 'meteredchat_key_v1';
+const $ = id => document.getElementById(id);
+const kas = amt => (Number(amt)/1e8).toLocaleString('en-US',{maximumFractionDigits:4})+' KAS';
+
+let session = null, pollTimer = null;
+let k = null; // kaspa sdk
+
+const post = (body) => fetch(API, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(async r=>{const j = await r.json().catch(()=>({})); if(!r.ok && !j.error) j.error='HTTP '+r.status; return j;});
+const setPill = (t,cls) => { $('statusPill').textContent = t; $('statusPill').className = 'pill '+cls; };
+const setStep = n => [...$('steps').children].forEach((el,i)=>el.className = i < n ? 'on':'');
+const show = (id,on=true) => $(id).classList.toggle('hidden', !on);
+const err = (id,msg) => { if(msg){ $(id).textContent = msg; show(id);} else show(id,false); };
+
+// ---------- key management (non-custodial) ----------
+async function loadSdk(){
+  if (k) return k;
+  const mod = await import('../vendor/kaspa/kaspa.js');
+  await mod.default();
+  k = mod;
+  return k;
+}
+async function ensureKey(){
+  let rec = JSON.parse(localStorage.getItem(KEY_STORE) || 'null');
+  if (!rec) return null;
+  await loadSdk();
+  const priv = new k.PrivateKey(rec.privKey);
+  rec.address = priv.toAddress('mainnet').toString(); // canonicalize
+  return rec;
+}
+function paintKey(rec){
+  if (!rec){ show('keyInfo',false); show('keyBox'); setStep(0); return; }
+  show('keyInfo'); show('keyBox',false);
+  $('myAddr').textContent = rec.address.slice(0,14)+'…'+rec.address.slice(-6);
+  fetch(KAS_API+'/addresses/'+rec.address+'/balance').then(r=>r.json())
+    .then(b=>{ const v = b?.balance?.mature || 0; $('myBal').textContent = kas(v); })
+    .catch(()=> $('myBal').textContent = '—');
+  initSession();
+}
+$('btnGen').onclick = async () => {
+  err('keyErr','');
+  try{
+    await loadSdk();
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    const hex = [...bytes].map(b => b.toString(16).padStart(2,'0')).join('');
+    const priv = new k.PrivateKey(hex);
+    const rec = { privKey: priv.toString(), address: priv.toAddress('mainnet').toString() };
+    localStorage.setItem(KEY_STORE, JSON.stringify(rec));
+    paintKey(rec);
+  }catch(e){ err('keyErr', String(e.message||e)); }
+};
+$('btnImp').onclick = () => show('impRow');
+$('btnImpGo').onclick = async () => {
+  err('keyErr','');
+  try{
+    await loadSdk();
+    const hex = $('impKey').value.trim().replace(/^0x/,'');
+    const priv = new k.PrivateKey(hex);
+    const rec = { privKey: priv.toString(), address: priv.toAddress('mainnet').toString() };
+    localStorage.setItem(KEY_STORE, JSON.stringify(rec));
+    paintKey(rec);
+  }catch(e){ err('keyErr', 'Invalid key: '+String(e.message||e).slice(0,120)); }
+};
+$('btnKeyOut').onclick = () => { localStorage.removeItem(KEY_STORE); paintKey(null); stopPoll(); };
+
+// ---------- session flow ----------
+async function initSession(){
+  const rec = await ensureKey(); if (!rec) return;
+  stopPoll();
+  const j = await post({action:'init', address: rec.address});
+  if (!j.ok){ setPill('error','bad'); return; }
+  session = j.sessionId;
+  routeByStatus(j);
+  if (['awaiting_covenant','awaiting_fund'].includes(j.status)) startPoll();
+}
+function startPoll(){ stopPoll(); pollTimer = setInterval(async ()=>{
+  const j = await post({action:'status', sessionId: session});
+  if (j.ok) routeByStatus(j);
+}, 5000); }
+function stopPoll(){ if (pollTimer) clearInterval(pollTimer); pollTimer = null; }
+
+function routeByStatus(j){
+  show('cardPlan', j.status==='awaiting_covenant');
+  show('cardBuild', j.status==='awaiting_covenant' && session && requestedBuild);
+  show('cardFund', j.status==='awaiting_fund');
+  show('cardChat', j.status==='live' || j.status==='exhausted');
+  if (j.status==='awaiting_covenant') setPill('covenant','wait');
+  if (j.status==='awaiting_fund'){
+    setPill('fund','wait'); setStep(3);
+    $('covAddr').textContent = j.covenantAddress || '';
+    window.__covAddr = j.covenantAddress;
+    $('fundAmt').textContent = kas(j.amountSompi); $('fundAmt2').textContent = kas(j.amountSompi);
+    sessionQuoted = j;
+  }
+  if (j.status==='live'){ setPill('live','live'); setStep(4); paintCredits(j); }
+  if (j.status==='exhausted'){ setPill('done','bad'); setStep(4); paintCredits(j); }
+  if (j.status==='refunded'){ setPill('refunded','bad'); setStep(1); }
+}
+
+// plan picker
+const PRICES = {1:'0.9 KAS',2:'1.6 KAS',3:'2.4 KAS',5:'3.9 KAS'};
+$('planEpochs').onchange = () => {
+  const e = $('planEpochs').value;
+  $('planPrice').textContent = '('+PRICES[e]+')';
+  $('planFine').textContent = 'Deposit: '+PRICES[e]+' · '+(e*10)+' replies total · CLTV refund after 7 days per epoch';
+};
+let requestedBuild = false, sessionQuoted = null;
+$('btnRequest').onclick = () => {
+  // The covenant build runs operator-side (post-quantum XMSS keygen + hop
+  // scripts are generated in the sandbox and registered to this session).
+  requestedBuild = true;
+  show('cardPlan', false); show('cardBuild');
+  setPill('covenant','wait'); setStep(2);
+  startPoll();
+};
+
+$('btnCopyCov').onclick = async () => {
+  try{ await navigator.clipboard.writeText(window.__covAddr||''); $('btnCopyCov').textContent='Copied ✓';
+    setTimeout(()=>$('btnCopyCov').textContent='Copy covenant address',1600);}catch{}
+};
+// ---------- funding (in-browser sign — non-custodial) ----------
+$('btnFundManual').onclick = async () => {
+  err('fundErr','');
+  const txid = prompt('Paste your funding transaction ID:');
+  if (!txid) return;
+  const j = await post({action:'funded', sessionId: session, fundingTxId: txid.trim()});
+  if (j.ok){ routeByStatus({status:'live', ...j}); stopPoll(); }
+  else err('fundErr', j.error || 'funding not accepted');
+};
+$('btnFund').onclick = async () => {
+  err('fundErr','');
+  const btn = $('btnFund'); btn.disabled = true; btn.textContent = 'Signing in browser…';
+  try{
+    const rec = await ensureKey();
+    await loadSdk();
+    // 1. UTXOs
+    const ur = await fetch(KAS_API+'/addresses/'+rec.address+'/utxos');
+    const ud = await ur.json();
+    let entries = (ud||[]).map(u=>u.utxoEntry||u).filter(Boolean)
+      .sort((a,b)=> (a.amount < b.amount ? 1 : -1));
+    if (!entries.length) throw new Error('No UTXOs at '+rec.address.slice(0,14)+'… — fund your wallet first');
+    const need = BigInt(sessionQuoted.amountSompi) + 200000n; // + 0.002 fee headroom
+    let picked = [], acc = 0n;
+    for (const e of entries){ picked.push(e); acc += BigInt(e.amount); if (acc >= need) break; }
+    if (acc < need) throw new Error('Balance '+kas(acc)+' < needed '+kas(need));
+    // 2. Build
+    const { RpcClient } = k;
+    const rpc = new RpcClient({ url:'wss://ivy.kaspa.green/kaspa/mainnet/wrpc/borsh', networkId:'mainnet'});
+    await rpc.connect();
+    const feeRate = 0.5;
+    const built = await k.createTransactions({
+      entries: picked,
+      outputs: [{ address: sessionQuoted.covenantAddress, amount: BigInt(sessionQuoted.amountSompi) }],
+      changeAddress: rec.address,
+      priorityFee: 0n, feeRate, sigOpCount: 1, networkId: 'mainnet'
+    });
+    const tx = built.transactions[built.selectedTransactions?.[0] ?? 0].transaction || built.transactions[0].transaction;
+    // 3. Sign (each input, sighash-accurate, local key only)
+    const priv = new k.PrivateKey(rec.privKey);
+    for (let i=0;i<tx.inputs.length;i++) tx.inputs[i].signatureScript = k.createInputSignature(tx, i, priv, k.SighashType.All);
+    // 4. Broadcast
+    const sub = await rpc.submitTransaction({ transaction: JSON.parse(JSON.stringify(tx)), allowOrphan:false });
+    await rpc.disconnect().catch(()=>{});
+    const txId = sub.transactionId;
+    const j = await post({action:'funded', sessionId: session, fundingTxId: txId});
+    if (j.ok){ routeByStatus({status:'live', ...j}); stopPoll(); }
+    else err('fundErr', j.error || 'funding not accepted (tx did broadcast: '+txId.slice(0,16)+'…)');
+  }catch(e){
+    err('fundErr', String(e.message||e).slice(0,300));
+  }finally{
+    btn.disabled = false; btn.textContent = 'Fund from my wallet (PSKT-style)';
+  }
+};
+
+// ---------- chat ----------
+function paintCredits(j){
+  const r = j.repliesRemaining ?? 0, per = j.repliesPerEpoch || 10, e = j.epochsRemaining ?? 0;
+  $('chatCredits').textContent = r+' / '+per+' in bundle · '+e+' locked';
+  $('creditBar').style.width = (per? (r/per*100):0)+'%';
+  $('meterTxt').textContent = e > 0 ? 'next bundle: '+e+' on-chain' : 'last bundle';
+  $('refundFine').textContent = 'Unspent value refunds to your address when the epoch expires — no signature needed.';
+  $('msgInput').disabled = r <= 0;
+  $('btnSend').disabled = r <= 0;
+}
+function addMsg(cls, txt){
+  const d = document.createElement('div'); d.className='msg '+cls; d.textContent = txt;
+  $('chatLog').appendChild(d); $('chatLog').scrollTop = 1e6;
+}
+$('btnSend').onclick = sendMsg;
+$('msgInput').addEventListener('keydown', e => { if (e.key==='Enter') sendMsg(); });
+async function sendMsg(){
+  const t = $('msgInput').value.trim(); if (!t) return;
+  err('chatErr',''); $('msgInput').value=''; addMsg('u', t);
+  $('btnSend').disabled = true;
+  const j = await post({action:'reply', sessionId: session, message: t});
+  if (j.ok){
+    addMsg('a', j.reply);
+    paintCredits(j);
+    if (j.needsCheckin) err('chatErr','Bundle empty — operator check-in settling the next bundle on-chain. This page will update automatically.');
+    if ((j.repliesRemaining ?? 0) === 0) startPoll();
+  } else {
+    err('chatErr', j.error || 'reply failed'); addMsg('a','⚠️ '+((j.error||'').toString()));
+    $('btnSend').disabled = false;
+  }
+}
+
+// boot
+(async () => { const rec = await ensureKey(); paintKey(rec); })();
+</script>
+</body>
+</html>
