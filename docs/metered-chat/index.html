@@ -78,6 +78,12 @@
   <div class="card" id="cardKey">
     <h2>Connect a Kaspa key</h2>
     <p>Your key is generated and stored in this browser only. It never leaves this device — the backend sees only your address.</p>
+    <div id="netBox">
+      <select id="netSelect">
+        <option value="mainnet">Mainnet (real KAS)</option>
+        <option value="testnet">Testnet-10 (tKAS, free from faucet)</option>
+      </select>
+    </div>
     <div id="keyBox">
       <button id="btnGen">Generate new key</button>
       <button class="ghost" id="btnImp">Import existing key (hex)</button>
@@ -138,8 +144,14 @@
 
 <script type="module">
 const API = 'https://base44.app/api/apps/6a444b036408e68ec8d6f2a6/functions/meteredChat';
-const KAS_API = 'https://api.kaspa.org';
+const KAS_API = 'https://api.kaspa.org'; // mainnet REST
+const KAS_API_TN10 = 'https://api-tn10.kaspa.org'; // testnet-10 REST (same shape as mainnet)
 const KEY_STORE = 'meteredchat_key_v1';
+const restBase = (net) => net === 'testnet' ? KAS_API_TN10 : KAS_API;
+const sdkNet = (net) => net === 'testnet' ? 'testnet-10' : 'mainnet'; // kaspa WASM SDK network id
+const rpcUrl = (net) => net === 'testnet'
+  ? 'wss://kaspa.aspectron.org:443/kaspa/testnet-10/wrpc/borsh'
+  : 'wss://ivy.kaspa.green/kaspa/mainnet/wrpc/borsh';
 const $ = id => document.getElementById(id);
 const kas = amt => (Number(amt)/1e8).toLocaleString('en-US',{maximumFractionDigits:4})+' KAS';
 
@@ -164,28 +176,31 @@ async function ensureKey(){
   let rec = JSON.parse(localStorage.getItem(KEY_STORE) || 'null');
   if (!rec) return null;
   await loadSdk();
+  rec.network = rec.network || 'mainnet';
   const priv = new k.PrivateKey(rec.privKey);
-  rec.address = priv.toAddress('mainnet').toString(); // canonicalize
+  rec.address = priv.toAddress(sdkNet(rec.network)).toString(); // canonicalize
   return rec;
 }
 function paintKey(rec){
-  if (!rec){ show('keyInfo',false); show('keyBox'); setStep(0); return; }
-  show('keyInfo'); show('keyBox',false);
-  $('myAddr').textContent = rec.address.slice(0,14)+'…'+rec.address.slice(-6);
-  fetch(KAS_API+'/addresses/'+rec.address+'/balance').then(r=>r.json())
-    .then(b=>{ const v = b?.balance?.mature || 0; $('myBal').textContent = kas(v); })
+  if (!rec){ show('keyInfo',false); show('keyBox'); show('netBox'); setStep(0); return; }
+  show('keyInfo'); show('keyBox',false); show('netBox',false);
+  const net = rec.network || 'mainnet';
+  $('myAddr').textContent = (net==='testnet' ? '[testnet] ' : '') + rec.address.slice(0,14)+'…'+rec.address.slice(-6);
+  fetch(restBase(net)+'/addresses/'+rec.address+'/balance').then(r=>r.json())
+    .then(b=>{ const v = b?.balance?.mature ?? b?.balance ?? 0; $('myBal').textContent = kas(v); })
     .catch(()=> $('myBal').textContent = '—');
   initSession();
 }
 $('btnGen').onclick = async () => {
   err('keyErr','');
+  const network = $('netSelect').value;
   try{
     await loadSdk();
     const bytes = new Uint8Array(32);
     crypto.getRandomValues(bytes);
     const hex = [...bytes].map(b => b.toString(16).padStart(2,'0')).join('');
     const priv = new k.PrivateKey(hex);
-    const rec = { privKey: priv.toString(), address: priv.toAddress('mainnet').toString() };
+    const rec = { privKey: priv.toString(), network, address: priv.toAddress(sdkNet(network)).toString() };
     localStorage.setItem(KEY_STORE, JSON.stringify(rec));
     paintKey(rec);
   }catch(e){ err('keyErr', String(e.message||e)); }
@@ -193,11 +208,12 @@ $('btnGen').onclick = async () => {
 $('btnImp').onclick = () => show('impRow');
 $('btnImpGo').onclick = async () => {
   err('keyErr','');
+  const network = $('netSelect').value;
   try{
     await loadSdk();
     const hex = $('impKey').value.trim().replace(/^0x/,'');
     const priv = new k.PrivateKey(hex);
-    const rec = { privKey: priv.toString(), address: priv.toAddress('mainnet').toString() };
+    const rec = { privKey: priv.toString(), network, address: priv.toAddress(sdkNet(network)).toString() };
     localStorage.setItem(KEY_STORE, JSON.stringify(rec));
     paintKey(rec);
   }catch(e){ err('keyErr', 'Invalid key: '+String(e.message||e).slice(0,120)); }
@@ -273,27 +289,28 @@ $('btnFund').onclick = async () => {
   const btn = $('btnFund'); btn.disabled = true; btn.textContent = 'Signing in browser…';
   try{
     const rec = await ensureKey();
+    const network = rec.network || 'mainnet';
     await loadSdk();
-    // 1. UTXOs
-    const ur = await fetch(KAS_API+'/addresses/'+rec.address+'/utxos');
+    // 1. UTXOs (same JSON shape on mainnet and testnet-10)
+    const ur = await fetch(restBase(network)+'/addresses/'+rec.address+'/utxos');
     const ud = await ur.json();
     let entries = (ud||[]).map(u=>u.utxoEntry||u).filter(Boolean)
       .sort((a,b)=> (a.amount < b.amount ? 1 : -1));
-    if (!entries.length) throw new Error('No UTXOs at '+rec.address.slice(0,14)+'… — fund your wallet first');
+    if (!entries.length) throw new Error('No UTXOs at '+rec.address.slice(0,14)+'… — fund your wallet first'+(network==='testnet'?' (use the TN10 faucet)':''));
     const need = BigInt(sessionQuoted.amountSompi) + 200000n; // + 0.002 fee headroom
     let picked = [], acc = 0n;
     for (const e of entries){ picked.push(e); acc += BigInt(e.amount); if (acc >= need) break; }
     if (acc < need) throw new Error('Balance '+kas(acc)+' < needed '+kas(need));
     // 2. Build
     const { RpcClient } = k;
-    const rpc = new RpcClient({ url:'wss://ivy.kaspa.green/kaspa/mainnet/wrpc/borsh', networkId:'mainnet'});
+    const rpc = new RpcClient({ url: rpcUrl(network), networkId: sdkNet(network) });
     await rpc.connect();
     const feeRate = 0.5;
     const built = await k.createTransactions({
       entries: picked,
       outputs: [{ address: sessionQuoted.covenantAddress, amount: BigInt(sessionQuoted.amountSompi) }],
       changeAddress: rec.address,
-      priorityFee: 0n, feeRate, sigOpCount: 1, networkId: 'mainnet'
+      priorityFee: 0n, feeRate, sigOpCount: 1, networkId: sdkNet(network)
     });
     const tx = built.transactions[built.selectedTransactions?.[0] ?? 0].transaction || built.transactions[0].transaction;
     // 3. Sign (each input, sighash-accurate, local key only)
